@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -117,15 +118,41 @@ class AgentPlaygroundClient:
             response.raise_for_status()
             return response.json()
 
-    async def list_runs(self, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+    async def list_runs(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+        session_id: str | None = None,
+        status: str | None = None,
+        tool_name: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        if session_id:
+            params["session_id"] = session_id
+        if status:
+            params["status"] = status
+        if tool_name:
+            params["tool_name"] = tool_name
+        if created_from is not None:
+            params["created_from"] = created_from.isoformat()
+        if created_to is not None:
+            params["created_to"] = created_to.isoformat()
         async with httpx.AsyncClient(base_url=self.base_url) as client:
-            response = await client.get("/api/v1/runs", params={"limit": limit, "offset": offset})
+            response = await client.get("/api/v1/runs", params=params)
             response.raise_for_status()
             return response.json()
 
     async def get_run(self, run_id: str) -> dict[str, Any]:
         async with httpx.AsyncClient(base_url=self.base_url) as client:
             response = await client.get(f"/api/v1/runs/{run_id}")
+            response.raise_for_status()
+            return response.json()
+
+    async def dashboard_run_stats(self, sample_size: int = 20) -> dict[str, Any]:
+        async with httpx.AsyncClient(base_url=self.base_url) as client:
+            response = await client.get("/api/v1/dashboard/run-stats", params={"sample_size": sample_size})
             response.raise_for_status()
             return response.json()
 

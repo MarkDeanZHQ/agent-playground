@@ -74,10 +74,16 @@ characters=11, lines=1, words=2
 - `tool_result`
 - `run_finished`
 
+如果你是从 Tools Lab 按 `s` 送过去的，再额外看两件事：
+
+- 当前自然语言 prompt 是否真的对应到选中的工具；
+- `used_tools` 和 Run Trace 里的 `tool_call` 名称是否一致。
+
 ## 5. 对比
 
 - 手动调用 `/tools/{name}/invoke` 和 Agent 自动触发工具，底层都返回 `ToolCallResult` 结构；
 - 但手动调用不会伪装成 Agent Run，不会污染 Run Trace 语义；
 - 用 `s` 把 Tools Lab 里的示例送到 Chat，再用 `F3` 看最近 Trace，最容易看懂这两条链路的区别。
+- `text_stats`、`note_search`、`json_extract`、`todo_create`、`todo_list` 在 TUI 里分别对应纯函数、检索、结构化抽取和受控副作用四类工具。
 
 手动调用工具和 Agent 自动调用工具，最终都返回同一种 `ToolCallResult` 结构。

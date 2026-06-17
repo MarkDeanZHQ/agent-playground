@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -7,9 +8,12 @@ from sqlalchemy import select
 
 os.environ["AGENT_PLAYGROUND_DATABASE_URL"] = "sqlite+aiosqlite:///./test_agent_playground.db"
 
+from app.agent.runner import AgentRunner  # noqa: E402
 from app.db.models import Message, MessageRole  # noqa: E402
 from app.db.session import AsyncSessionLocal  # noqa: E402
 from app.main import app  # noqa: E402
+from app.models.adapters import ModelAdapterError  # noqa: E402
+from app.tools.builtin import build_default_registry  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -379,6 +383,63 @@ async def test_run_list_endpoint_returns_summaries():
     assert run["status"] == "completed"
     assert run["tool_count"] >= 1
     assert run["step_count"] >= 1
+    assert run["duration_ms"] is not None
+
+
+@pytest.mark.asyncio
+async def test_run_list_endpoint_supports_status_tool_and_time_filters():
+    class FailingModel:
+        async def next_turn(self, user_message, context, tool_results):
+            raise ModelAdapterError("forced failure for filtering")
+
+    async with AsyncSessionLocal() as db:
+        failed_run = await AgentRunner(db, build_default_registry(), model=FailingModel()).run("ses_failed", "你好", [])
+        await db.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        completed_response = await client.post("/api/v1/chat", json={"message": "请统计 hello world"})
+        created_from = datetime.now(UTC) - timedelta(minutes=5)
+        created_to = datetime.now(UTC) + timedelta(minutes=5)
+        failed_only = await client.get("/api/v1/runs", params={"status": "failed"})
+        text_stats_runs = await client.get("/api/v1/runs", params={"tool_name": "text_stats"})
+        time_filtered = await client.get(
+            "/api/v1/runs",
+            params={"created_from": created_from.isoformat(), "created_to": created_to.isoformat()},
+        )
+
+    assert failed_only.status_code == 200
+    assert all(run["status"] == "failed" for run in failed_only.json())
+    assert any(run["id"] == failed_run.id for run in failed_only.json())
+
+    assert text_stats_runs.status_code == 200
+    assert any(run["id"] == completed_response.json()["run_id"] for run in text_stats_runs.json())
+
+    assert time_filtered.status_code == 200
+    returned_ids = {run["id"] for run in time_filtered.json()}
+    assert completed_response.json()["run_id"] in returned_ids
+    assert failed_run.id in returned_ids
+
+
+@pytest.mark.asyncio
+async def test_dashboard_run_stats_endpoint_returns_recent_failure_and_model_error():
+    class FailingModel:
+        async def next_turn(self, user_message, context, tool_results):
+            raise ModelAdapterError("forced dashboard failure")
+
+    async with AsyncSessionLocal() as db:
+        await AgentRunner(db, build_default_registry(), model=FailingModel()).run("ses_failed_stats", "你好", [])
+        await db.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await client.post("/api/v1/chat", json={"message": "请统计 hello world"})
+        response = await client.get("/api/v1/dashboard/run-stats", params={"sample_size": 20})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["sample_size"] >= 2
+    assert payload["failed_runs"] >= 1
+    assert payload["average_duration_ms"] is not None
+    assert payload["latest_model_error"]
 
 
 @pytest.mark.asyncio

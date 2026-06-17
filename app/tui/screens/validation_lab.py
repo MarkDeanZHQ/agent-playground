@@ -61,6 +61,8 @@ CHECKS = [
     ValidationCheck("chat_no_tool", "普通 Chat 不触发工具", "core_path"),
     ValidationCheck("chat_text_stats", "Chat 触发 text_stats", "core_path"),
     ValidationCheck("chat_note_search", "Chat 触发 note_search", "core_path"),
+    ValidationCheck("chat_json_extract", "Chat 触发 json_extract", "core_path"),
+    ValidationCheck("chat_todo_roundtrip", "Chat 创建并读取 todo", "core_path"),
     ValidationCheck("memory_roundtrip", "记忆写入后可查询", "core_path"),
     ValidationCheck("run_trace", "run_id 可查询 trace", "core_path"),
     ValidationCheck("claude_config", "Claude provider 配置检查", "environment"),
@@ -227,6 +229,8 @@ class ValidationLabScreen(Screen[None]):
             "chat_no_tool": self._check_chat_no_tool,
             "chat_text_stats": self._check_chat_text_stats,
             "chat_note_search": self._check_chat_note_search,
+            "chat_json_extract": self._check_chat_json_extract,
+            "chat_todo_roundtrip": self._check_chat_todo_roundtrip,
             "memory_roundtrip": self._check_memory_roundtrip,
             "run_trace": self._check_run_trace,
             "claude_config": self._check_claude_config,
@@ -313,6 +317,47 @@ class ValidationLabScreen(Screen[None]):
             "note_search",
             "note_search 工具触发成功。",
             "检查笔记工具注册与检索规则。",
+        )
+
+    async def _check_chat_json_extract(self) -> ValidationResult:
+        payload = await self.client.chat(
+            "请调用 json_extract 工具，从下面文本提取 name/email/city 字段："
+            "name: Alice\nemail: alice@example.com\ncity: Shanghai",
+            timeout=self.chat_validation_timeout,
+        )
+        return self._format_contains_result(
+            "chat_json_extract",
+            payload,
+            "used_tools",
+            "json_extract",
+            "json_extract 工具触发成功。",
+            "检查结构化抽取工具注册、示例提示和 FakeModelAdapter 触发规则。",
+        )
+
+    async def _check_chat_todo_roundtrip(self) -> ValidationResult:
+        create_payload = await self.client.chat(
+            "请创建待办：复盘 validation todo roundtrip",
+            timeout=self.chat_validation_timeout,
+        )
+        list_payload = await self.client.chat(
+            "请列出待办列表",
+            timeout=self.chat_validation_timeout,
+        )
+        passed = (
+            "todo_create" in create_payload.get("used_tools", [])
+            and "todo_list" in list_payload.get("used_tools", [])
+            and "复盘 validation todo roundtrip" in list_payload.get("answer", "")
+        )
+        combined_payload = {
+            "create": create_payload,
+            "list": list_payload,
+        }
+        return self._format_bool_result(
+            "chat_todo_roundtrip",
+            passed,
+            combined_payload,
+            "todo_create / todo_list 工具往返成功。",
+            "检查副作用工具写入、读取和 Chat 自动触发链路。",
         )
 
     async def _check_memory_roundtrip(self) -> ValidationResult:

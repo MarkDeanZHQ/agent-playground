@@ -1,11 +1,14 @@
+import json
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import and_, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import Settings, get_settings
-from app.db.models import AgentRun, AgentStep, Memory, MemoryStatus, ToolCall
+from app.db.models import AgentRun, AgentStep, Memory, MemoryStatus, RunStatus, ToolCall
 from app.db.session import get_session
 from app.memory.service import (
     InvalidMemoryOperationError,
@@ -19,6 +22,7 @@ from app.schemas.api import (
     ChatResponse,
     CreateMemoryRequest,
     CreateSessionRequest,
+    DashboardRunStatsResponse,
     MemoryResponse,
     MemoryVersionResponse,
     ModelHealthResponse,
@@ -36,6 +40,9 @@ from app.services.chat import ChatService
 from app.tools.builtin import build_default_registry
 
 router = APIRouter(prefix="/api/v1")
+
+RUN_LIST_MAX_LIMIT = 100
+RUN_STATS_DEFAULT_SAMPLE_SIZE = 20
 
 
 def _memory_status_value(status: MemoryStatus | str) -> str:
@@ -251,11 +258,15 @@ async def model_health(live: bool = False) -> ModelHealthResponse:
 @router.get("/runs", response_model=list[RunSummaryResponse])
 async def list_runs(
     session_id: str | None = None,
+    status: RunStatus | None = None,
+    tool_name: str | None = None,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
     limit: int = 20,
     offset: int = 0,
     db: AsyncSession = Depends(get_session),
 ) -> list[RunSummaryResponse]:
-    safe_limit = min(max(limit, 1), 100)
+    safe_limit = min(max(limit, 1), RUN_LIST_MAX_LIMIT)
     safe_offset = max(offset, 0)
 
     step_counts = (
@@ -280,6 +291,14 @@ async def list_runs(
     )
     if session_id:
         query = query.where(AgentRun.session_id == session_id)
+    if status is not None:
+        query = query.where(AgentRun.status == status)
+    if tool_name:
+        query = query.where(exists(select(ToolCall.id).where(and_(ToolCall.run_id == AgentRun.id, ToolCall.name == tool_name))))
+    if created_from is not None:
+        query = query.where(AgentRun.created_at >= created_from)
+    if created_to is not None:
+        query = query.where(AgentRun.created_at <= created_to)
 
     result = await db.execute(query)
     return [
@@ -292,9 +311,53 @@ async def list_runs(
             finished_at=run.finished_at,
             step_count=step_count,
             tool_count=tool_count,
+            duration_ms=int((run.finished_at - run.created_at).total_seconds() * 1000)
+            if run.finished_at is not None
+            else None,
         )
         for run, step_count, tool_count in result.all()
     ]
+
+
+@router.get("/dashboard/run-stats", response_model=DashboardRunStatsResponse)
+async def dashboard_run_stats(
+    sample_size: int = RUN_STATS_DEFAULT_SAMPLE_SIZE,
+    db: AsyncSession = Depends(get_session),
+) -> DashboardRunStatsResponse:
+    safe_sample_size = min(max(sample_size, 1), RUN_LIST_MAX_LIMIT)
+    runs_result = await db.execute(
+        select(AgentRun)
+        .order_by(AgentRun.created_at.desc())
+        .limit(safe_sample_size)
+    )
+    runs = list(runs_result.scalars())
+    failed_runs = sum(1 for run in runs if getattr(run.status, "value", run.status) == RunStatus.failed.value)
+    durations = [
+        int((run.finished_at - run.created_at).total_seconds() * 1000)
+        for run in runs
+        if run.finished_at is not None
+    ]
+    latest_model_error_result = await db.execute(
+        select(AgentStep.content)
+        .where(AgentStep.kind == "model_error")
+        .order_by(AgentStep.created_at.desc())
+        .limit(1)
+    )
+    latest_model_error_content = latest_model_error_result.scalar_one_or_none()
+    latest_model_error: str | None = None
+    if latest_model_error_content:
+        try:
+            payload = json.loads(latest_model_error_content)
+        except json.JSONDecodeError:
+            latest_model_error = latest_model_error_content
+        else:
+            latest_model_error = str(payload.get("message") or latest_model_error_content)
+    return DashboardRunStatsResponse(
+        sample_size=len(runs),
+        failed_runs=failed_runs,
+        average_duration_ms=int(sum(durations) / len(durations)) if durations else None,
+        latest_model_error=latest_model_error,
+    )
 
 
 @router.get("/runs/{run_id}", response_model=RunTraceResponse)

@@ -76,9 +76,30 @@ curl -X POST http://127.0.0.1:8000/api/v1/chat \
 6. 按 `s` 把当前示例送到 `F2` Chat Lab，观察模型是否自动调用工具。
 7. `F3` Run Trace 中观察 `tool_call`、`tool_result`、`model_tool_use`。
 
+## Tools Lab 学习闭环
+
+建议按这个顺序走一遍，不然只会看热闹看不懂门道：
+
+1. `F4` Tools Lab 先看 `text_stats`，理解最小 schema 和纯函数工具；
+2. 切到 `json_extract`，看结构化 JSON 返回长什么样；
+3. 故意删掉 `fields`，观察 `SCHEMA_VALIDATION_ERROR`；
+4. 切到 `todo_create`，调用一次，再用 `todo_list` 读回来；
+5. 按 `s` 把当前 example 送到 Chat Lab；
+6. 在 `F2` 发送消息后，按 `F3` 看 Run Trace；
+7. 对照手动调用历史和自动 `tool_call` / `tool_result`，理解两条链路的边界。
+
+关键认知：
+
+- schema 不只是给前端看的，它同时约束手动调用和模型调用；
+- `description` 写的是“什么时候该调”，不是简单功能名；
+- `examples` 和 `learning_notes` 只服务教学与 TUI，不参与后端执行；
+- 手动 `/tools/{name}/invoke` 不会伪装成 Agent Run；
+- 工具失败不是系统崩溃，而是可观察结果。
+
 ## 对应测试
 
 - `tests/test_tools.py`
 - `tests/test_api.py::test_tools_endpoint_lists_default_tools`
 - `tests/test_api.py::test_tool_invoke_endpoint_returns_success_and_observable_error`
-- `tests/test_agent_runner.py::test_agent_runner_records_tool_failure`
+- `tests/test_agent_runner.py::test_agent_loop_can_trigger_json_extract_tool`
+- `tests/test_agent_runner.py::test_agent_loop_can_trigger_todo_side_effect_tools`

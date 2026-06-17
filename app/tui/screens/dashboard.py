@@ -59,6 +59,7 @@ class DashboardScreen(Screen[None]):
         model_message = ""
         model_check_mode = "static"
         live_duration_seconds: float | None = None
+        run_stats: dict[str, object] = {}
         try:
             health = await self.client.health()
             started_at = time.perf_counter()
@@ -66,6 +67,7 @@ class DashboardScreen(Screen[None]):
             if live_model_check:
                 live_duration_seconds = time.perf_counter() - started_at
             runs = await self.client.list_runs(limit=1)
+            run_stats = await self.client.dashboard_run_stats()
             memories = await self.client.list_memories()
             tools = await self.client.list_tools()
             api_status = health.get("status", "unknown")
@@ -115,5 +117,11 @@ class DashboardScreen(Screen[None]):
         if model_health.get("tool_calling_message"):
             log.write(f"Tool Calling Detail:\n{model_health.get('tool_calling_message')}")
         log.write(f"Runs: {run_count}")
+        if run_stats:
+            log.write(f"Recent Run Sample Size: {run_stats.get('sample_size')}")
+            log.write(f"Recent Failed Runs: {run_stats.get('failed_runs')}")
+            log.write(f"Recent Average Duration: {run_stats.get('average_duration_ms')}ms")
+            if run_stats.get("latest_model_error"):
+                log.write(f"Latest Model Error:\n{run_stats.get('latest_model_error')}")
         log.write(f"Memories: {memory_count}")
         log.write(f"Tools: {tool_count}")

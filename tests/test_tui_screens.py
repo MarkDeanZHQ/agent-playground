@@ -4,6 +4,9 @@ from app.tui.client import AgentPlaygroundClient
 from app.tui.main import AgentPlaygroundTui
 from app.tui.screens.memory_lab import MemoryLabScreen
 from app.tui.screens.tools_lab import (
+    format_history_entry,
+    format_tool_result,
+    make_example_prompt,
     format_schema_validation_error,
     format_tool_json_error,
     sample_arguments_for_schema,
@@ -151,6 +154,51 @@ def test_tool_schema_validation_reports_required_and_type_errors():
     assert "字段 `fields` 必须是 array" in message
 
 
+def test_tool_result_formatter_separates_status_arguments_content_and_raw_response():
+    message = format_tool_result(
+        {
+            "name": "todo_create",
+            "arguments": {"title": "复盘 trace"},
+            "content": '{"id":"todo-1"}',
+            "is_error": False,
+        }
+    )
+
+    assert "Status" in message
+    assert "OK" in message
+    assert "Arguments" in message
+    assert '"title": "复盘 trace"' in message
+    assert "Content" in message
+    assert '{"id":"todo-1"}' in message
+    assert "Raw response" in message
+
+
+def test_tool_history_entry_is_compact_and_observable():
+    entry = format_history_entry(
+        {
+            "time": "12:34:56",
+            "tool": "json_extract",
+            "status": "OK",
+            "arguments_summary": '{"text":"name: Alice"}',
+            "result_summary": '{"name":"Alice"}',
+        }
+    )
+
+    assert "[12:34:56] json_extract OK" in entry
+    assert "参数摘要：" in entry
+    assert "结果摘要：" in entry
+
+
+def test_make_example_prompt_covers_structured_and_side_effect_tools():
+    assert "提取 name, email" in make_example_prompt(
+        {
+            "name": "json_extract",
+        },
+        {"text": "name: Alice", "fields": ["name", "email"]},
+    )
+    assert make_example_prompt({"name": "todo_list"}, {}) == "请列出当前 sandbox 里的待办列表。"
+
+
 
 def test_memory_lab_parse_query_supports_management_statuses():
     screen = MemoryLabScreen(AgentPlaygroundClient("http://test"))
@@ -176,6 +224,8 @@ def test_validation_lab_groups_checks_by_learning_stage():
         "chat_no_tool",
         "chat_text_stats",
         "chat_note_search",
+        "chat_json_extract",
+        "chat_todo_roundtrip",
         "memory_roundtrip",
         "run_trace",
     ]

@@ -80,11 +80,17 @@ curl -X POST http://127.0.0.1:8000/api/v1/tools/uppercase/invoke \
 - 工具成功：断言返回内容；
 - 工具失败：断言 `is_error=true` 或异常被正确记录。
 
+如果你想让新工具真正融入 Tools Lab 学习闭环，至少再补两件事：
+
+- 给 `/api/v1/tools` 返回的定义加上 `examples` 和 `learning_notes`；
+- 补一条 TUI helper 测试，确认 example 能填充、错误提示能落到正确分类。
+
 可参考：
 
 - `tests/test_tools.py`
 - `tests/test_api.py::test_invoke_tool_returns_result`
-- `tests/test_agent_runner.py::test_agent_runner_records_tool_failure`
+- `tests/test_agent_runner.py::test_agent_loop_can_trigger_json_extract_tool`
+- `tests/test_tui_screens.py`
 
 ## 注意事项
 
@@ -93,3 +99,5 @@ curl -X POST http://127.0.0.1:8000/api/v1/tools/uppercase/invoke \
 - 文件访问应限制在明确目录中；
 - Schema 中尽量写清楚参数 description；
 - 如果工具有副作用，先限制 sandbox 边界，再考虑是否需要确认机制；本项目不提供任意文件写入。
+- `description` 要写“什么时候调用”，不是只写“它能干什么”；
+- `examples` 要能直接拿来跑，别写一堆花活参数把 Tools Lab 自己搞死。

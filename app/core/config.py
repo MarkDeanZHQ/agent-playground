@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "Agent Playground"
     database_url: str = "sqlite+aiosqlite:///./agent_playground.db"
+    db_init_mode: Literal["create_all", "alembic"] = "create_all"
     sandbox_dir: Path = Path("sandbox/notes")
     max_agent_loops: int = 4
     model_provider: Literal["fake", "claude", "openai"] = "fake"

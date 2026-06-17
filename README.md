@@ -22,7 +22,7 @@
 - 可测试的 Agent Loop
 - 受控安全工具：`text_stats`、`note_search`、`json_extract`、`todo_create`、`todo_list`
 - SQLite + SQLAlchemy Async 持久化
-- Alembic 初始迁移与开发态 `create_all`
+- Alembic 初始迁移与数据库双模式初始化（`create_all` / `alembic`）
 - 轻量长期记忆策略：保守关键词检索、可解释评分、使用反馈、保守冲突处理、用户可控管理闭环与 `memory_versions` 版本审计记录
 - 轻量会话摘要：`session_summaries` 滚动摘要、摘要 trace、chat/stream 持久化一致性
 - 真实 Claude / OpenAI / OpenAI-compatible 模型接入
@@ -43,7 +43,7 @@
 | 长会话摘要压缩 | `app/services/session_summary.py`, `session_summaries`, `ContextBuilder.build()` |
 | 长期记忆抽取/检索/注入 | `app/memory/service.py`, `memories`, `memory_versions`；Agent 默认只检索 `active` 记忆，并在注入后更新 `use_count` / `last_used_at` |
 | 记忆使用闭环 | `tests/test_api.py::test_memory_roundtrip_retrieves_injects_and_uses_saved_memory` |
-| Trace 可观察性 | `agent_steps`, `tool_calls`, `/api/v1/runs/{run_id}` |
+| Trace 可观察性 | `agent_steps`, `tool_calls`, `/api/v1/runs`, `/api/v1/runs/{run_id}`, `/api/v1/dashboard/run-stats` |
 | 测试 | `tests/`, `uv run pytest` |
 | Docker | `Dockerfile`, `docker-compose.yml`, `.env.docker.example` |
 
@@ -236,7 +236,17 @@ uv run uvicorn app.main:app --reload
 
 ## 数据库迁移
 
-开发学习模式仍会在应用启动时执行 `Base.metadata.create_all()`，降低首次运行门槛。需要显式演进 schema 时使用 Alembic：
+开发学习模式仍会在应用启动时执行 `Base.metadata.create_all()`，降低首次运行门槛。通过 `AGENT_PLAYGROUND_DB_INIT_MODE` 可切换数据库初始化模式：
+
+```env
+AGENT_PLAYGROUND_DB_INIT_MODE=create_all
+AGENT_PLAYGROUND_DB_INIT_MODE=alembic
+```
+
+- `create_all`：默认学习模式，启动时自动建表，并保留旧 SQLite 补丁兼容逻辑；
+- `alembic`：严格迁移模式，启动时不会执行 `create_all()`，会校验当前数据库 revision 是否等于 Alembic head，不一致就直接报错并提示执行迁移。
+
+需要显式演进 schema 时使用 Alembic：
 
 ```bash
 uv run alembic upgrade head
@@ -244,6 +254,30 @@ uv run alembic revision --autogenerate -m "describe schema change"
 ```
 
 如果本地 `agent_playground.db` 已经由开发态 `create_all()` 建过表，初始迁移使用 `IF NOT EXISTS` 风格兼容该场景，并会写入 Alembic 版本表。更多说明见 [`docs/08-testing-and-docker.md`](docs/08-testing-and-docker.md)。
+
+## Trace 检索与 Dashboard 指标
+
+`/api/v1/runs` 现在支持这些轻量过滤参数，够定位失败样本了，别把它想成日志平台：
+
+- `status`
+- `session_id`
+- `tool_name`
+- `created_from`
+- `created_to`
+- `limit`
+- `offset`
+
+TUI 的 Run Trace 页面新增了：
+
+- 搜索框：按 `run id`、`session id`、`final answer` 片段做轻量搜索；
+- `只看失败 run` 开关：优先复盘失败样本；
+- 列表补充状态、耗时、工具数、步骤数、创建时间。
+
+Dashboard 新增最近 run 的轻量指标：
+
+- 最近样本失败次数；
+- 最近样本平均耗时；
+- 最近一次 `model_error` 摘要。
 
 本轮已提供初始迁移：
 

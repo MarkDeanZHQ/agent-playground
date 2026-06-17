@@ -4,7 +4,7 @@ import httpx
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Label, ListItem, ListView, Static
+from textual.widgets import Checkbox, Input, Label, ListItem, ListView, Static
 
 from app.tui.client import AgentPlaygroundClient
 from app.tui.widgets import (
@@ -26,6 +26,7 @@ class RunTraceScreen(Screen[None]):
         super().__init__()
         self.client = client
         self.runs: list[dict] = []
+        self.filtered_runs: list[dict] = []
         self.steps: list[dict] = []
         self.tool_calls: list[dict] = []
 
@@ -46,6 +47,9 @@ class RunTraceScreen(Screen[None]):
                 id="run-trace-status",
                 classes="page-status",
             )
+            with Horizontal(id="run-trace-filters"):
+                yield Input(placeholder="搜索 run id / session id / final answer", id="run-search")
+                yield Checkbox("只看失败 run", id="failed-only")
             with Horizontal(id="run-trace-panels"):
                 with Vertical(id="run-runs-panel", classes="panel"):
                     yield Static("Runs｜最近执行记录", classes="panel-title")
@@ -74,32 +78,50 @@ class RunTraceScreen(Screen[None]):
         await steps_list.clear()
         detail.clear()
         try:
-            self.runs = await self.client.list_runs()
+            status_filter = "failed" if self.query_one("#failed-only", Checkbox).value else None
+            self.runs = await self.client.list_runs(limit=50, status=status_filter)
         except httpx.HTTPError as exc:
             self.runs = []
+            self.filtered_runs = []
             self.steps = []
             self.tool_calls = []
             status.update("加载 Run 失败。")
             detail.write(format_http_error(exc))
             return
-        for run in self.runs:
+        self.filtered_runs = self._filter_runs(self.runs)
+        for run in self.filtered_runs:
             label = f"{run['id']} {run['status']} tools={run['tool_count']} steps={run['step_count']}"
+            if run.get("duration_ms") is not None:
+                label += f" duration={run['duration_ms']}ms"
+            label += f" created={run['created_at']}"
             await runs_list.append(ListItem(Label(label)))
-        if self.runs:
+        if self.filtered_runs:
             runs_list.index = 0
             status.update("已刷新。选择左侧 Run 或中间 Step 查看详情。")
-            await self.load_run(self.runs[0]["id"])
+            await self.load_run(self.filtered_runs[0]["id"])
             return
         self.steps = []
         self.tool_calls = []
-        status.update("暂无 Run。")
+        status.update("没有匹配的 Run。")
         detail.write(
             empty_state(
-                "暂无执行记录。",
-                "按 F2 到 Chat Lab 发送一条消息，然后回到 F3 查看 trace。",
+                "暂无匹配执行记录。",
+                "按 F2 到 Chat Lab 发送一条消息，或调整搜索与失败筛选。",
                 "请统计 hello world",
             )
         )
+
+    def _filter_runs(self, runs: list[dict]) -> list[dict]:
+        query = self.query_one("#run-search", Input).value.strip().lower()
+        if not query:
+            return runs
+        return [
+            run
+            for run in runs
+            if query in str(run.get("id", "")).lower()
+            or query in str(run.get("session_id", "")).lower()
+            or query in str(run.get("final_answer", "")).lower()
+        ]
 
     async def load_run(self, run_id: str) -> None:
         detail = self.query_one("#detail", CopyableText)
@@ -133,7 +155,7 @@ class RunTraceScreen(Screen[None]):
 
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.list_view.id == "runs-list" and event.list_view.index is not None:
-            await self.load_run(self.runs[event.list_view.index]["id"])
+            await self.load_run(self.filtered_runs[event.list_view.index]["id"])
             return
         if event.list_view.id == "steps-list" and event.list_view.index is not None:
             index = event.list_view.index
@@ -146,3 +168,11 @@ class RunTraceScreen(Screen[None]):
             else:
                 detail.write(pretty_json(self.tool_calls[index - len(self.steps)]))
                 status.update("已显示选中 Tool Call。")
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "run-search":
+            self.run_worker(self.refresh_runs(), exclusive=True)
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if event.checkbox.id == "failed-only":
+            self.run_worker(self.refresh_runs(), exclusive=True)

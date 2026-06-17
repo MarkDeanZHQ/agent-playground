@@ -163,6 +163,14 @@ class RunSummaryResponse(BaseModel):
     finished_at: datetime | None
     tool_count: int
     step_count: int
+    duration_ms: int | None = None
+
+
+class DashboardRunStatsResponse(BaseModel):
+    sample_size: int
+    failed_runs: int
+    average_duration_ms: int | None = None
+    latest_model_error: str | None = None
 
 
 class RunTraceResponse(BaseModel):
