@@ -1,0 +1,21 @@
+# Local environment files
+.env
+.env.docker
+
+# Local SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# Python / tool caches
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.serena/
+
+# VCS and editor noise
+.git/
+.gitignore
+.vscode/
+.idea/

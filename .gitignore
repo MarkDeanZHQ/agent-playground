@@ -1,0 +1,36 @@
+# Local environment files
+.env
+.env.*
+.env.docker
+!.env.example
+!.env.*.example
+
+# Local SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# Python / tool caches
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.serena/
+.ace-tool/
+
+# Build and coverage artifacts
+dist/
+build/
+htmlcov/
+.coverage
+coverage.xml
+
+# Local sandbox side effects
+sandbox/todos.json
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

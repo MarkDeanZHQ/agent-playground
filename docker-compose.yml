@@ -1,0 +1,15 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.docker
+    environment:
+      AGENT_PLAYGROUND_DATABASE_URL: sqlite+aiosqlite:////app/data/agent_playground.db
+    volumes:
+      - agent_data:/app/data
+      - ./sandbox:/app/sandbox
+
+volumes:
+  agent_data:
