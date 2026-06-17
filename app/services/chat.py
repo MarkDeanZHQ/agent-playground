@@ -205,6 +205,7 @@ class ChatService:
                     "content": memory.content,
                     "conflict_key": memory.conflict_key,
                     "resolution": "supersedes",
+                    "outcome": self._conflict_outcome(conflict_decision),
                     "reason": conflict_decision.reason if conflict_decision else "",
                 },
             )
@@ -224,6 +225,7 @@ class ChatService:
                         "session_id": memory.session_id,
                         "supersedes_memory_id": memory.supersedes_memory_id,
                         "conflict_resolution": conflict_decision.resolution if conflict_decision else "no_conflict",
+                        "conflict_outcome": self._conflict_outcome(conflict_decision),
                     },
                 )
         else:
@@ -258,8 +260,16 @@ class ChatService:
             return None
         return {
             "resolution": decision.resolution,
+            "outcome": self._conflict_outcome(decision),
             "reason": decision.reason,
             "conflict_key": decision.conflict_key,
             "candidate_ids": decision.candidate_ids,
             "superseded_ids": decision.superseded_ids,
         }
+
+    def _conflict_outcome(self, decision) -> str:
+        if decision is None:
+            return "no_conflict"
+        if decision.resolution == "pending_confirmation":
+            return "coexists"
+        return decision.resolution

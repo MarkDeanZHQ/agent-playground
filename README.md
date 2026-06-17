@@ -56,7 +56,7 @@
 - 默认 `FakeModelAdapter` 用于教学演示，不代表真实 LLM 推理能力；它只覆盖工具调用、记忆引用等少量可验收路径。
 - 长期记忆检索当前是轻量关键词检索：保守 term 提取、DB 粗过滤、Python 精排；不支持 embedding、向量数据库、reranker 或复杂语义相关性排序。
 - 记忆管理支持 `active` / `superseded` / `invalidated` / `archived` / `deleted`；非 `active` 记忆不会注入 Agent 上下文，`superseded` 与 `invalidated` 是系统历史状态，只读，软删除不会物理删除数据。每条记忆还会暴露 `scope/category/source_kind/confidence/expires_at` 这组解释字段。
-- 记忆冲突处理采用 `conflict_key` + 明确替换信号的保守策略，并显式输出 `no_conflict` / `pending_confirmation` / `supersedes` / `invalidated` 决策；普通相关记忆默认新增，不能识别所有复杂偏好冲突或细粒度事实冲突。
+- 记忆冲突处理采用 `conflict_key` + 明确替换信号的保守策略，并显式输出 `no_conflict` / `pending_confirmation` / `supersedes` / `invalidated` 决策；没有替换意图时 trace 会把执行结果标记为 `coexists`。普通相关记忆默认新增，不能识别所有复杂偏好冲突或细粒度事实冲突。
 - 短期上下文保留当前 session 最近有限消息，超长对话会先写入结构化摘要，再继续保留最近窗口原文；摘要只覆盖当前 turn 之前的旧消息，不等于长期记忆。上下文构建会输出块级 `context_trace`，用于解释预算、来源、裁剪和丢弃原因；当前 user message 不会重复进入 recent window。
 - 工具集仅包含安全的教学工具，不提供 shell、浏览器抓取、任意文件读写等高权限工具。
 - OpenAI-compatible 服务的 tool calling 支持度不一致；协议兼容模式只调整参数与流式解析，不再自动禁用 tools。

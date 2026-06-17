@@ -296,7 +296,9 @@ async def test_chat_memory_trace_records_pending_confirmation_for_same_conflict_
     policy_payload = json.loads(next(step["content"] for step in steps if step["kind"] == "memory_policy_decision"))
     saved_payload = json.loads(next(step["content"] for step in steps if step["kind"] == "memory_saved"))
     assert policy_payload["conflict_decision"]["resolution"] == "pending_confirmation"
+    assert policy_payload["conflict_decision"]["outcome"] == "coexists"
     assert saved_payload["conflict_resolution"] == "pending_confirmation"
+    assert saved_payload["conflict_outcome"] == "coexists"
     assert saved_payload["supersedes_memory_id"] is None
 
 
@@ -480,9 +482,12 @@ async def test_chat_memory_trace_records_conflict_decision_and_supersedes_link()
     saved_payload = json.loads(next(step["content"] for step in steps if step["kind"] == "memory_saved"))
     superseded_payload = json.loads(next(step["content"] for step in steps if step["kind"] == "memory_superseded"))
     assert policy_payload["conflict_decision"]["resolution"] == "supersedes"
+    assert policy_payload["conflict_decision"]["outcome"] == "supersedes"
     assert saved_payload["conflict_resolution"] == "supersedes"
+    assert saved_payload["conflict_outcome"] == "supersedes"
     assert saved_payload["supersedes_memory_id"] == superseded["id"]
     assert superseded_payload["resolution"] == "supersedes"
+    assert superseded_payload["outcome"] == "supersedes"
 
 
 @pytest.mark.asyncio

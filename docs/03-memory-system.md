@@ -97,7 +97,7 @@ curl 'http://127.0.0.1:8000/api/v1/memories?status=deleted'
 冲突处理采用保守策略：系统会从内容派生 `conflict_key`，但同一个 `conflict_key` 不等于一定冲突。决策会显式记录为：
 
 - `no_conflict`：没有冲突键，或同范围内没有同 key 的 active 记忆；
-- `pending_confirmation`：命中同一冲突键，但用户没有表达替换意图，保守并存并等待后续确认；
+- `pending_confirmation`：命中同一冲突键，但用户没有表达替换意图，保守并存并等待后续确认；trace 中的执行结果 `outcome` / `conflict_outcome` 会标记为 `coexists`；
 - `supersedes`：命中同一冲突键且用户原文包含明确替换信号（如“以后用 / 改为 / 替换成 / 不再 / instead”）；
 - `invalidated`：记忆因过期等规则失效，不再参与检索。
 
