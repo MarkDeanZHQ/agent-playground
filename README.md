@@ -61,6 +61,7 @@
 - 工具集仅包含安全的教学工具，不提供 shell、浏览器抓取、任意文件读写等高权限工具。
 - OpenAI-compatible 服务的 tool calling 支持度不一致；协议兼容模式只调整参数与流式解析，不再自动禁用 tools。
 - `live=true` 模型健康检查会真实请求模型供应商，可能产生 token 成本或触发供应商限流。
+- Dashboard、Chat Lab、Run Trace 会展示最近一次统一 `usage_summary`、`estimated_cost` 和 `provider error` 分类。
 - Docker 默认使用 `fake` provider；接入真实 Claude/OpenAI 时需要自行配置 API Key，并避免提交 `.env` / `.env.docker`。
 
 ## 使用 uv 创建依赖环境
@@ -135,9 +136,16 @@ curl -X POST http://127.0.0.1:8000/api/v1/chat \
 - `AGENT_PLAYGROUND_MODEL_PROVIDER` 严格限制为 `fake`、`claude`、`openai`。
 - 测试环境强制使用 `fake` provider，避免本地 `.env` 误触发真实 API 调用。
 - SDK 异常会转为可观察的 `model_error` trace，Agent Run 状态会落为 `failed`。
-- 模型 `usage` 会记录为 `token_usage` trace step。
+- 模型 `usage` 会记录为 `token_usage` trace step，并补充统一 `usage_summary` / `estimated_cost` / `cost_notice`。
 - `/api/v1/chat/stream` 会在真实 provider 下透传文本 delta；Fake provider 仍按一次性 delta 模拟。
 - OpenAI 工具参数 JSON 解析失败会变成可观察的 `_parse_error` 参数，不会直接抛 500。
+
+## 真实模型可观察性说明
+
+- `usage_summary` 是统一 token 摘要，方便把 Claude 和 OpenAI 的 usage 字段收口成同一套 UI 展示。
+- `estimated_cost` 是基于内置静态价格表的教学估算值，只反映单次调用的大致成本，不等于供应商最终账单。
+- `cost_notice` 会明确提示“这是估算值”或“当前模型没有内置价格表，无法估算成本”。
+- `error_info.code` 用于把 provider 失败分成 `auth_failed`、`rate_limited`、`timeout`、`model_not_found`、`tool_schema_incompatible` 等类别，便于下一步排查。
 
 ## 安全边界
 

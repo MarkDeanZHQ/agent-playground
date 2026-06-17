@@ -14,6 +14,11 @@ from app.db.models import Message, MessageRole  # noqa: E402
 from app.db.session import AsyncSessionLocal  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models.adapters import ModelAdapterError  # noqa: E402
+from app.services.model_observability import (  # noqa: E402
+    classify_provider_error,
+    estimate_cost,
+    usage_summary_from_payload,
+)
 from app.tools.builtin import build_default_registry  # noqa: E402
 
 
@@ -65,6 +70,8 @@ async def test_model_health_endpoint_reports_fake_provider_without_live_call():
     assert payload["status"] == "ok"
     assert payload["live"] is False
     assert payload["tool_calling_status"] == "ok"
+    assert payload["usage_summary"] is None
+    assert payload["estimated_cost"] is None
 
 
 @pytest.mark.asyncio
@@ -318,6 +325,57 @@ async def test_run_trace_endpoint_returns_steps():
     assert {"memory_retrieval_started", "memory_retrieved", "memory_policy_decision"}.issubset(
         {step["kind"] for step in trace["steps"]}
     )
+
+
+def test_usage_summary_normalizes_claude_and_openai_payloads():
+    claude_summary = usage_summary_from_payload(
+        "claude",
+        {
+            "input_tokens": 120,
+            "output_tokens": 30,
+            "cache_creation_input_tokens": 50,
+            "cache_read_input_tokens": 10,
+        },
+    )
+    openai_summary = usage_summary_from_payload(
+        "openai",
+        {"prompt_tokens": 100, "completion_tokens": 40, "total_tokens": 140},
+    )
+
+    assert claude_summary is not None
+    assert claude_summary.total_tokens == 210
+    assert openai_summary is not None
+    assert openai_summary.input_tokens == 100
+    assert openai_summary.output_tokens == 40
+
+
+def test_cost_estimate_returns_notice_for_unknown_model_and_value_for_known_model():
+    usage_summary = usage_summary_from_payload(
+        "openai",
+        {"prompt_tokens": 1000, "completion_tokens": 500, "total_tokens": 1500},
+    )
+
+    estimate, notice = estimate_cost("gpt-4.1", usage_summary)
+    unknown_estimate, unknown_notice = estimate_cost("unknown-model", usage_summary)
+
+    assert estimate is not None
+    assert estimate.total_cost is not None
+    assert notice is not None
+    assert unknown_estimate is None
+    assert "没有内置价格表" in str(unknown_notice)
+
+
+def test_provider_error_classification_covers_auth_rate_limit_timeout_and_tool_schema():
+    auth = classify_provider_error("openai", Exception("401 invalid_api_key"))
+    rate = classify_provider_error("openai", Exception("429 rate limit exceeded"))
+    timeout = classify_provider_error("openai", Exception("ReadTimeout request timed out"))
+    tool_schema = classify_provider_error("openai", Exception("invalid tools schema"))
+
+    assert auth.code == "auth_failed"
+    assert rate.code == "rate_limited"
+    assert rate.retryable is True
+    assert timeout.code == "timeout"
+    assert tool_schema.code == "tool_schema_incompatible"
 
 
 @pytest.mark.asyncio

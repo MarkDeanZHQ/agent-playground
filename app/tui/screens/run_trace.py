@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -11,7 +13,9 @@ from app.tui.widgets import (
     CopyableText,
     ScreenNavBar,
     empty_state,
+    format_error_info,
     format_http_error,
+    format_token_usage,
     page_shortcuts,
     page_title,
     pretty_json,
@@ -142,6 +146,11 @@ class RunTraceScreen(Screen[None]):
         self.tool_calls = trace.get("tool_calls", [])
         for step in self.steps:
             label = f"{step['step_index']} {step['kind']} {short_text(step['content'], 40)}"
+            payload = self._parse_step_payload(step)
+            if step["kind"] == "token_usage":
+                label = f"{step['step_index']} Usage {format_token_usage(payload)}"
+            if step["kind"] == "model_error":
+                label = f"{step['step_index']} Error {format_error_info((payload or {}).get('error_info'))}"
             if step["kind"] in {"model_response", "model_tool_use", "model_final"}:
                 label = "Claude " + label
             if step["kind"].startswith("session_summary_"):
@@ -163,7 +172,31 @@ class RunTraceScreen(Screen[None]):
             status = self.query_one("#run-trace-status", Static)
             detail.clear()
             if index < len(self.steps):
-                detail.write(pretty_json(self.steps[index]))
+                step = self.steps[index]
+                payload = self._parse_step_payload(step)
+                if step["kind"] == "token_usage" and payload is not None:
+                    detail.write(
+                        pretty_json(
+                            {
+                                "usage_summary": payload.get("usage_summary"),
+                                "estimated_cost": payload.get("estimated_cost"),
+                                "cost_notice": payload.get("cost_notice"),
+                                "raw_usage": payload.get("usage"),
+                                "finish_reason": payload.get("finish_reason"),
+                            }
+                        )
+                    )
+                elif step["kind"] == "model_error" and payload is not None:
+                    detail.write(
+                        pretty_json(
+                            {
+                                "message": payload.get("message"),
+                                "error_info": payload.get("error_info"),
+                            }
+                        )
+                    )
+                else:
+                    detail.write(pretty_json(step))
                 status.update("已显示选中 Step。")
             else:
                 detail.write(pretty_json(self.tool_calls[index - len(self.steps)]))
@@ -176,3 +209,13 @@ class RunTraceScreen(Screen[None]):
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         if event.checkbox.id == "failed-only":
             self.run_worker(self.refresh_runs(), exclusive=True)
+
+    def _parse_step_payload(self, step: dict) -> dict | None:
+        content = step.get("content")
+        if not isinstance(content, str):
+            return None
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None

@@ -29,7 +29,9 @@ from app.tui.widgets import (
     CopyableText,
     ScreenNavBar,
     empty_state,
+    format_error_info,
     format_http_error,
+    format_token_usage,
     page_shortcuts,
     page_title,
 )
@@ -203,6 +205,27 @@ def test_tool_result_formatter_separates_status_arguments_content_and_raw_respon
     assert "Content" in message
     assert '{"id":"todo-1"}' in message
     assert "Raw response" in message
+
+
+def test_usage_and_error_formatters_render_observable_summary():
+    usage_message = format_token_usage(
+        {
+            "usage_summary": {"input_tokens": 123, "output_tokens": 45, "total_tokens": 168},
+            "estimated_cost": {"total_cost": 0.0012},
+        }
+    )
+    error_message = format_error_info(
+        {
+            "code": "rate_limited",
+            "retryable": True,
+            "suggestion": "稍后重试",
+        }
+    )
+
+    assert "input=123" in usage_message
+    assert "cost~$0.001200" in usage_message
+    assert "rate_limited" in error_message
+    assert "retryable=true" in error_message
 
 
 def test_tool_history_entry_is_compact_and_observable():

@@ -9,11 +9,16 @@ from openai import AsyncOpenAI, OpenAIError
 
 from app.core.config import get_settings
 from app.schemas.api import ModelTurn, ToolCallRequest, ToolCallResult
+from app.services.model_observability import classify_provider_error, estimate_cost, usage_summary_from_payload
 from app.tools.registry import ToolRegistry
 
 
 class ModelAdapterError(RuntimeError):
     """Sanitized model-provider error safe to record in traces and responses."""
+
+    def __init__(self, message: str, error_info: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.error_info = error_info
 
 
 class ModelAdapter(ABC):
@@ -157,7 +162,8 @@ class ClaudeModelAdapter(ModelAdapter):
         try:
             response = await self.client.messages.create(**self._request_kwargs(messages))
         except AnthropicError as exc:
-            raise ModelAdapterError(f"Claude 请求失败：{exc.__class__.__name__}") from exc
+            error_info = classify_provider_error("claude", exc).model_dump()
+            raise ModelAdapterError(f"Claude 请求失败：{exc.__class__.__name__}", error_info=error_info) from exc
         return self._turn_from_response(response)
 
     async def stream_turn(
@@ -174,7 +180,8 @@ class ClaudeModelAdapter(ModelAdapter):
                         yield str(text)
                 response = await stream.get_final_message()
         except AnthropicError as exc:
-            raise ModelAdapterError(f"Claude 流式请求失败：{exc.__class__.__name__}") from exc
+            error_info = classify_provider_error("claude", exc).model_dump()
+            raise ModelAdapterError(f"Claude 流式请求失败：{exc.__class__.__name__}", error_info=error_info) from exc
         yield self._turn_from_response(response)
 
     def _request_kwargs(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -224,11 +231,16 @@ class ClaudeModelAdapter(ModelAdapter):
 
     def _handle_refusal_response(self, parts: ClaudeResponseParts) -> ModelTurn:
         self.pending_assistant_content = None
+        usage_summary = usage_summary_from_payload("claude", parts.usage)
+        estimated_cost, cost_notice = estimate_cost(self.model, usage_summary)
         return ModelTurn(
             kind="final",
             content="Claude 拒绝了本次请求，请调整输入后重试。",
             finish_reason=parts.stop_reason,
             usage=parts.usage,
+            usage_summary=usage_summary,
+            estimated_cost=estimated_cost,
+            cost_notice=cost_notice,
         )
 
     def _tool_call_from_block(self, block: dict[str, Any]) -> ToolCallRequest:
@@ -243,14 +255,23 @@ class ClaudeModelAdapter(ModelAdapter):
     def _build_tool_call_turn(self, parts: ClaudeResponseParts) -> ModelTurn:
         if not parts.tool_calls:
             self.pending_assistant_content = None
-            raise ModelAdapterError("Claude 响应 stop_reason=tool_use，但没有 tool_use 内容块。")
+            error_info = classify_provider_error(
+                "claude",
+                ModelAdapterError("Claude 响应 stop_reason=tool_use，但没有 tool_use 内容块。"),
+            ).model_dump()
+            raise ModelAdapterError("Claude 响应 stop_reason=tool_use，但没有 tool_use 内容块。", error_info=error_info)
         self.pending_assistant_content = parts.assistant_content
+        usage_summary = usage_summary_from_payload("claude", parts.usage)
+        estimated_cost, cost_notice = estimate_cost(self.model, usage_summary)
         return ModelTurn(
             kind="tool_call",
             tool_call=parts.tool_calls[0],
             tool_calls=parts.tool_calls,
             finish_reason=parts.stop_reason,
             usage=parts.usage,
+            usage_summary=usage_summary,
+            estimated_cost=estimated_cost,
+            cost_notice=cost_notice,
         )
 
     def _build_final_turn(self, parts: ClaudeResponseParts) -> ModelTurn:
@@ -261,12 +282,17 @@ class ClaudeModelAdapter(ModelAdapter):
         truncated = parts.stop_reason == "max_tokens"
         if truncated and text:
             text = f"{text}\n\n（模型输出达到最大 token 限制，结果可能被截断。）"
+        usage_summary = usage_summary_from_payload("claude", parts.usage)
+        estimated_cost, cost_notice = estimate_cost(self.model, usage_summary)
         return ModelTurn(
             kind="final",
             content=text or "Claude 未返回文本内容。",
             finish_reason=parts.stop_reason,
             usage=parts.usage,
             truncated=truncated,
+            usage_summary=usage_summary,
+            estimated_cost=estimated_cost,
+            cost_notice=cost_notice,
         )
 
     def _build_messages(
@@ -368,9 +394,17 @@ class OpenAIModelAdapter(ModelAdapter):
         except ModelAdapterError:
             raise
         except OpenAIError as exc:
-            raise ModelAdapterError(f"OpenAI 请求失败：{exc.__class__.__name__}: {self._safe_str(exc)}") from exc
+            error_info = classify_provider_error("openai", exc).model_dump()
+            raise ModelAdapterError(
+                f"OpenAI 请求失败：{exc.__class__.__name__}: {self._safe_str(exc)}",
+                error_info=error_info,
+            ) from exc
         except Exception as exc:
-            raise ModelAdapterError(f"OpenAI 请求异常：{exc.__class__.__name__}: {self._safe_str(exc)}") from exc
+            error_info = classify_provider_error("openai", exc).model_dump()
+            raise ModelAdapterError(
+                f"OpenAI 请求异常：{exc.__class__.__name__}: {self._safe_str(exc)}",
+                error_info=error_info,
+            ) from exc
 
     async def stream_turn(
         self,
@@ -399,9 +433,17 @@ class OpenAIModelAdapter(ModelAdapter):
         except ModelAdapterError:
             raise
         except OpenAIError as exc:
-            raise ModelAdapterError(f"OpenAI 流式请求失败：{exc.__class__.__name__}: {self._safe_str(exc)}") from exc
+            error_info = classify_provider_error("openai", exc).model_dump()
+            raise ModelAdapterError(
+                f"OpenAI 流式请求失败：{exc.__class__.__name__}: {self._safe_str(exc)}",
+                error_info=error_info,
+            ) from exc
         except Exception as exc:
-            raise ModelAdapterError(f"OpenAI 流式请求异常：{exc.__class__.__name__}: {self._safe_str(exc)}") from exc
+            error_info = classify_provider_error("openai", exc).model_dump()
+            raise ModelAdapterError(
+                f"OpenAI 流式请求异常：{exc.__class__.__name__}: {self._safe_str(exc)}",
+                error_info=error_info,
+            ) from exc
         yield turn
 
     async def _stream_turn_compatible(
@@ -445,7 +487,18 @@ class OpenAIModelAdapter(ModelAdapter):
         truncated = finish_reason == "length"
         if truncated and content:
             content = f"{content}\n\n（模型输出达到最大 token 限制，结果可能被截断。）"
-        yield ModelTurn(kind="final", content=content, finish_reason=finish_reason, usage=usage, truncated=truncated)
+        usage_summary = usage_summary_from_payload("openai", usage)
+        estimated_cost, cost_notice = estimate_cost(self.model, usage_summary)
+        yield ModelTurn(
+            kind="final",
+            content=content,
+            finish_reason=finish_reason,
+            usage=usage,
+            truncated=truncated,
+            usage_summary=usage_summary,
+            estimated_cost=estimated_cost,
+            cost_notice=cost_notice,
+        )
 
     def _request_kwargs(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
@@ -467,6 +520,8 @@ class OpenAIModelAdapter(ModelAdapter):
         if message is None:
             raise ModelAdapterError("OpenAI 响应中没有 message。")
         usage = self._usage_dict(getattr(response, "usage", None))
+        usage_summary = usage_summary_from_payload("openai", usage)
+        estimated_cost, cost_notice = estimate_cost(self.model, usage_summary)
         if getattr(message, "tool_calls", None):
             tool_calls = []
             for tool_call in message.tool_calls:
@@ -490,6 +545,9 @@ class OpenAIModelAdapter(ModelAdapter):
                 tool_calls=tool_calls,
                 finish_reason=finish_reason,
                 usage=usage,
+                usage_summary=usage_summary,
+                estimated_cost=estimated_cost,
+                cost_notice=cost_notice,
             )
 
         self.pending_assistant_message = None
@@ -497,7 +555,16 @@ class OpenAIModelAdapter(ModelAdapter):
         truncated = finish_reason == "length"
         if truncated and content:
             content = f"{content}\n\n（模型输出达到最大 token 限制，结果可能被截断。）"
-        return ModelTurn(kind="final", content=content, finish_reason=finish_reason, usage=usage, truncated=truncated)
+        return ModelTurn(
+            kind="final",
+            content=content,
+            finish_reason=finish_reason,
+            usage=usage,
+            truncated=truncated,
+            usage_summary=usage_summary,
+            estimated_cost=estimated_cost,
+            cost_notice=cost_notice,
+        )
 
     def _build_messages(
         self,

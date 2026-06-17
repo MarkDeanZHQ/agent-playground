@@ -10,7 +10,15 @@ from textual.widgets import Static
 
 from app.core.config import get_settings
 from app.tui.client import AgentPlaygroundClient
-from app.tui.widgets import CopyableText, ScreenNavBar, format_http_error, page_shortcuts, page_title
+from app.tui.widgets import (
+    CopyableText,
+    ScreenNavBar,
+    format_error_info,
+    format_http_error,
+    format_token_usage,
+    page_shortcuts,
+    page_title,
+)
 
 
 class DashboardScreen(Screen[None]):
@@ -121,6 +129,12 @@ class DashboardScreen(Screen[None]):
             log.write(f"Recent Run Sample Size: {run_stats.get('sample_size')}")
             log.write(f"Recent Failed Runs: {run_stats.get('failed_runs')}")
             log.write(f"Recent Average Duration: {run_stats.get('average_duration_ms')}ms")
+            if run_stats.get("latest_usage_summary") or run_stats.get("latest_estimated_cost"):
+                log.write(f"Latest Usage: {format_token_usage(run_stats)}")
+            if run_stats.get("latest_error_info"):
+                log.write(f"Latest Provider Error: {format_error_info(run_stats.get('latest_error_info'))}")
+            if run_stats.get("latest_cost_notice"):
+                log.write(f"Cost Notice: {run_stats.get('latest_cost_notice')}")
             if run_stats.get("latest_model_error"):
                 log.write(f"Latest Model Error:\n{run_stats.get('latest_model_error')}")
         log.write(f"Memories: {memory_count}")

@@ -20,12 +20,14 @@ from app.models.adapters import ClaudeModelAdapter, ModelAdapterError, OpenAIMod
 from app.schemas.api import (
     ChatRequest,
     ChatResponse,
+    CostEstimate,
     CreateMemoryRequest,
     CreateSessionRequest,
     DashboardRunStatsResponse,
     MemoryResponse,
     MemoryVersionResponse,
     ModelHealthResponse,
+    ProviderErrorInfo,
     RunSummaryResponse,
     RunTraceResponse,
     SessionResponse,
@@ -35,6 +37,7 @@ from app.schemas.api import (
     ToolDefinitionResponse,
     ToolInvokeRequest,
     UpdateMemoryRequest,
+    UsageSummary,
 )
 from app.services.chat import ChatService
 from app.tools.builtin import build_default_registry
@@ -208,6 +211,7 @@ async def _live_model_health_response(provider: str, model_name: str | None) -> 
             tool_calling_enabled=settings.openai_tool_calling if provider == "openai" else None,
             tool_calling_status="unavailable" if provider == "openai" else None,
             tool_calling_message="真实模型请求失败，无法判断 tool calling 能力。" if provider == "openai" else None,
+            error_info=ProviderErrorInfo(**exc.error_info) if getattr(exc, "error_info", None) else None,
         )
 
     tool_calling_enabled = settings.openai_tool_calling if provider == "openai" else None
@@ -251,7 +255,46 @@ async def _live_model_health_response(provider: str, model_name: str | None) -> 
         tool_calling_enabled=tool_calling_enabled,
         tool_calling_status=tool_calling_status,
         tool_calling_message=tool_calling_message,
+        usage_summary=turn.usage_summary,
+        estimated_cost=turn.estimated_cost,
+        cost_notice=turn.cost_notice,
     )
+
+
+def _parse_step_json(content: str) -> dict[str, object] | None:
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _usage_cost_error_from_steps(
+    steps: list[AgentStep],
+) -> tuple[UsageSummary | None, CostEstimate | None, ProviderErrorInfo | None, str | None]:
+    latest_usage: UsageSummary | None = None
+    latest_cost: CostEstimate | None = None
+    latest_error: ProviderErrorInfo | None = None
+    latest_notice: str | None = None
+    for step in sorted(steps, key=lambda item: item.step_index):
+        payload = _parse_step_json(step.content)
+        if not payload:
+            continue
+        if step.kind == "token_usage":
+            usage_summary = payload.get("usage_summary")
+            estimated_cost = payload.get("estimated_cost")
+            if isinstance(usage_summary, dict):
+                latest_usage = UsageSummary(**usage_summary)
+            if isinstance(estimated_cost, dict):
+                latest_cost = CostEstimate(**estimated_cost)
+            notice = payload.get("cost_notice")
+            if isinstance(notice, str) and notice:
+                latest_notice = notice
+        if step.kind == "model_error":
+            error_info = payload.get("error_info")
+            if isinstance(error_info, dict):
+                latest_error = ProviderErrorInfo(**error_info)
+    return latest_usage, latest_cost, latest_error, latest_notice
 
 @router.get("/models/health", response_model=ModelHealthResponse)
 async def model_health(live: bool = False) -> ModelHealthResponse:
@@ -352,26 +395,46 @@ async def dashboard_run_stats(
         for run in runs
         if run.finished_at is not None
     ]
-    latest_model_error_result = await db.execute(
-        select(AgentStep.content)
+    latest_error_run_result = await db.execute(
+        select(AgentRun)
+        .join(AgentStep, AgentStep.run_id == AgentRun.id)
         .where(AgentStep.kind == "model_error")
         .order_by(AgentStep.created_at.desc())
         .limit(1)
+        .options(selectinload(AgentRun.steps))
     )
-    latest_model_error_content = latest_model_error_result.scalar_one_or_none()
+    latest_error_run = latest_error_run_result.scalar_one_or_none()
     latest_model_error: str | None = None
-    if latest_model_error_content:
-        try:
-            payload = json.loads(latest_model_error_content)
-        except json.JSONDecodeError:
-            latest_model_error = latest_model_error_content
+    latest_usage_summary: UsageSummary | None = None
+    latest_estimated_cost: CostEstimate | None = None
+    latest_error_info: ProviderErrorInfo | None = None
+    latest_cost_notice: str | None = None
+    if latest_error_run is not None:
+        (
+            latest_usage_summary,
+            latest_estimated_cost,
+            latest_error_info,
+            latest_cost_notice,
+        ) = _usage_cost_error_from_steps(list(latest_error_run.steps))
+        if latest_error_info is not None:
+            latest_model_error = latest_error_info.message
         else:
-            latest_model_error = str(payload.get("message") or latest_model_error_content)
+            for step in sorted(latest_error_run.steps, key=lambda item: item.step_index, reverse=True):
+                if step.kind != "model_error":
+                    continue
+                payload = _parse_step_json(step.content)
+                if payload and payload.get("message"):
+                    latest_model_error = str(payload["message"])
+                    break
     return DashboardRunStatsResponse(
         sample_size=len(runs),
         failed_runs=failed_runs,
         average_duration_ms=int(sum(durations) / len(durations)) if durations else None,
         latest_model_error=latest_model_error,
+        latest_usage_summary=latest_usage_summary,
+        latest_estimated_cost=latest_estimated_cost,
+        latest_error_info=latest_error_info,
+        latest_cost_notice=latest_cost_notice,
     )
 
 
@@ -385,6 +448,7 @@ async def get_run(run_id: str, db: AsyncSession = Depends(get_session)) -> RunTr
     run = result.scalar_one_or_none()
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
+    usage_summary, estimated_cost, error_info, cost_notice = _usage_cost_error_from_steps(list(run.steps))
     return RunTraceResponse(
         id=run.id,
         session_id=run.session_id,
@@ -404,6 +468,10 @@ async def get_run(run_id: str, db: AsyncSession = Depends(get_session)) -> RunTr
             )
             for call in sorted(run.tool_calls, key=lambda item: item.created_at)
         ],
+        usage_summary=usage_summary,
+        estimated_cost=estimated_cost,
+        error_info=error_info,
+        cost_notice=cost_notice,
     )
 
 

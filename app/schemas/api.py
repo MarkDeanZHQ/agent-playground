@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Any, Literal
 
@@ -61,6 +63,10 @@ class ModelTurn(BaseModel):
     finish_reason: str | None = None
     usage: dict[str, int] = Field(default_factory=dict)
     truncated: bool = False
+    usage_summary: UsageSummary | None = None
+    estimated_cost: CostEstimate | None = None
+    error_info: ProviderErrorInfo | None = None
+    cost_notice: str | None = None
 
 
 class StreamEvent(BaseModel):
@@ -78,6 +84,10 @@ class ModelHealthResponse(BaseModel):
     tool_calling_enabled: bool | None = None
     tool_calling_status: Literal["ok", "not_checked", "unsupported", "unavailable"] | None = None
     tool_calling_message: str | None = None
+    usage_summary: UsageSummary | None = None
+    estimated_cost: CostEstimate | None = None
+    error_info: ProviderErrorInfo | None = None
+    cost_notice: str | None = None
 
 
 class CreateMemoryRequest(BaseModel):
@@ -126,7 +136,7 @@ class UpdateMemoryRequest(BaseModel):
         return normalized
 
     @model_validator(mode="after")
-    def at_least_one_field(self) -> "UpdateMemoryRequest":
+    def at_least_one_field(self) -> UpdateMemoryRequest:
         if (
             self.content is None
             and self.importance is None
@@ -208,6 +218,10 @@ class DashboardRunStatsResponse(BaseModel):
     failed_runs: int
     average_duration_ms: int | None = None
     latest_model_error: str | None = None
+    latest_usage_summary: UsageSummary | None = None
+    latest_estimated_cost: CostEstimate | None = None
+    latest_error_info: ProviderErrorInfo | None = None
+    latest_cost_notice: str | None = None
 
 
 class RunTraceResponse(BaseModel):
@@ -217,3 +231,36 @@ class RunTraceResponse(BaseModel):
     final_answer: str | None
     steps: list[StepResponse]
     tool_calls: list[ToolCallResponse]
+    usage_summary: UsageSummary | None = None
+    estimated_cost: CostEstimate | None = None
+    error_info: ProviderErrorInfo | None = None
+    cost_notice: str | None = None
+
+
+class UsageSummary(BaseModel):
+    provider: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cache_creation_input_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
+    raw: dict[str, int] = Field(default_factory=dict)
+
+
+class CostEstimate(BaseModel):
+    currency: str = "USD"
+    input_cost: float | None = None
+    output_cost: float | None = None
+    cache_write_cost: float | None = None
+    cache_read_cost: float | None = None
+    total_cost: float | None = None
+    price_version: str | None = None
+
+
+class ProviderErrorInfo(BaseModel):
+    code: str
+    provider: str
+    message: str
+    retryable: bool = False
+    exception_type: str | None = None
+    suggestion: str | None = None

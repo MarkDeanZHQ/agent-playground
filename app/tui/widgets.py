@@ -24,6 +24,40 @@ def short_text(value: str | None, limit: int = 80) -> str:
     return value if len(value) <= limit else value[: limit - 1] + "…"
 
 
+def format_token_usage(payload: dict[str, Any] | None) -> str:
+    if not payload:
+        return "n/a"
+    usage_summary = payload.get("usage_summary")
+    estimated_cost = payload.get("estimated_cost")
+    parts: list[str] = []
+    if isinstance(usage_summary, dict):
+        parts.append(
+            "usage "
+            + " ".join(
+                [
+                    f"input={usage_summary.get('input_tokens', 0)}",
+                    f"output={usage_summary.get('output_tokens', 0)}",
+                    f"total={usage_summary.get('total_tokens', 0)}",
+                ]
+            )
+        )
+    if isinstance(estimated_cost, dict) and estimated_cost.get("total_cost") is not None:
+        parts.append(f"cost~${float(estimated_cost['total_cost']):.6f}")
+    return " | ".join(parts) if parts else "n/a"
+
+
+def format_error_info(payload: dict[str, Any] | None) -> str:
+    if not payload:
+        return "n/a"
+    code = payload.get("code", "unknown")
+    retryable = payload.get("retryable")
+    suggestion = payload.get("suggestion")
+    parts = [f"{code}", f"retryable={str(bool(retryable)).lower()}"]
+    if suggestion:
+        parts.append(str(suggestion))
+    return " | ".join(parts)
+
+
 def pretty_json(value: Any) -> str:
     if isinstance(value, str):
         try:

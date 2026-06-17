@@ -11,7 +11,15 @@ from textual.screen import Screen
 from textual.widgets import Input, RichLog, Static
 
 from app.tui.client import AgentPlaygroundClient, SseEvent
-from app.tui.widgets import ScreenNavBar, format_http_error, page_shortcuts, page_title, pretty_json
+from app.tui.widgets import (
+    ScreenNavBar,
+    format_error_info,
+    format_http_error,
+    format_token_usage,
+    page_shortcuts,
+    page_title,
+    pretty_json,
+)
 
 
 class ChatLabScreen(Screen[None]):
@@ -75,6 +83,8 @@ class ChatLabScreen(Screen[None]):
             "used_tools": [],
             "used_memories": [],
             "error_text": "",
+            "usage_payload": None,
+            "error_info": None,
             "started_at": time.perf_counter(),
             "first_token_at": None,
             "completed_at": None,
@@ -123,6 +133,10 @@ class ChatLabScreen(Screen[None]):
             used_tools.append(str(event.data.get("name")))
         if event.event in {"model_error", "stream_error"}:
             state["error_text"] = str(event.data.get("message") or event.data.get("detail") or "流式响应中断")
+            if event.data.get("error_info"):
+                state["error_info"] = event.data.get("error_info")
+        if event.event == "token_usage":
+            state["usage_payload"] = event.data
 
     def _write_observable_event(
         self,
@@ -158,6 +172,8 @@ class ChatLabScreen(Screen[None]):
         if event.event in {"model_error", "stream_error"}:
             status.update("模型或流式响应失败，详情见对话与 Trace。")
             conversation.write(f"Error: {state['error_text']}")
+            if event.data.get("error_info"):
+                conversation.write(f"Provider error: {format_error_info(event.data.get('error_info'))}")
 
     def _write_message_summary(self, conversation: RichLog, state: dict[str, object]) -> None:
         used_tools = state["used_tools"]
@@ -176,6 +192,14 @@ class ChatLabScreen(Screen[None]):
             conversation.write(f"Latency: first_token={first_text} total={total:.2f}s")
         error_text = str(state.get("error_text", ""))
         final_text = str(state["final_text"])
+        usage_payload = state.get("usage_payload")
+        error_info = state.get("error_info")
+        if isinstance(usage_payload, dict):
+            conversation.write(f"Usage: {format_token_usage(usage_payload)}")
+            if usage_payload.get("cost_notice"):
+                conversation.write(f"Cost Notice: {usage_payload.get('cost_notice')}")
+        if isinstance(error_info, dict):
+            conversation.write(f"Provider error: {format_error_info(error_info)}")
         if error_text:
             if final_text:
                 conversation.write(f"Agent(partial): {final_text}")

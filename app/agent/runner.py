@@ -11,6 +11,7 @@ from app.memory.service import RetrievedMemory, extract_query_terms
 from app.models.adapters import ModelAdapter, ModelAdapterError
 from app.models.factory import create_model_adapter
 from app.schemas.api import ModelTurn, StreamEvent, ToolCallResult
+from app.services.model_observability import classify_provider_error
 from app.services.session_summary import SummaryResult
 from app.tools.registry import ToolRegistry
 
@@ -71,7 +72,7 @@ _StepEmitter = Callable[[AgentStep], Awaitable[None]]
 _ToolTraceEmitter = Callable[[_ToolExecutionTrace], Awaitable[None]]
 _MessageDeltaEmitter = Callable[[str], Awaitable[None]]
 _SuccessHandler = Callable[[RunStatus, str, bool, dict[str, object] | None], Awaitable[None]]
-_FailureHandler = Callable[[str, dict[str, object] | None], Awaitable[None]]
+_FailureHandler = Callable[[str, dict[str, object] | None, dict[str, object] | None], Awaitable[None]]
 
 
 class ContextBuilder:
@@ -422,7 +423,16 @@ class AgentRunner:
         if turn.usage:
             await recorder.step(
                 "token_usage",
-                json.dumps({"usage": turn.usage, "finish_reason": turn.finish_reason}, ensure_ascii=False),
+                json.dumps(
+                    {
+                        "usage": turn.usage,
+                        "usage_summary": turn.usage_summary.model_dump() if turn.usage_summary else None,
+                        "estimated_cost": turn.estimated_cost.model_dump() if turn.estimated_cost else None,
+                        "cost_notice": turn.cost_notice,
+                        "finish_reason": turn.finish_reason,
+                    },
+                    ensure_ascii=False,
+                ),
             )
         return step
 
@@ -516,13 +526,21 @@ class AgentRunner:
                     emit_message_delta,
                 )
         except ModelAdapterError as exc:
-            await on_failure(str(exc), stream_metrics.latency_payload() if stream_metrics is not None else None)
+            await on_failure(
+                str(exc),
+                stream_metrics.latency_payload() if stream_metrics is not None else None,
+                getattr(exc, "error_info", None),
+            )
             return _TurnCycleResult(should_continue=False)
         except Exception as exc:
             if stream_metrics is None:
                 raise
             message = f"模型流式执行异常：{exc.__class__.__name__}: {exc}"
-            await on_failure(message, stream_metrics.latency_payload() if stream_metrics is not None else None)
+            await on_failure(
+                message,
+                stream_metrics.latency_payload() if stream_metrics is not None else None,
+                classify_provider_error(getattr(self.model, "provider", "unknown"), exc).model_dump(),
+            )
             return _TurnCycleResult(should_continue=False)
 
         model_turn = await self._record_model_turn(recorder, turn)
@@ -571,8 +589,12 @@ class AgentRunner:
         recorder: TraceRecorder,
         message: str,
         used_tools: list[str],
+        error_info: dict[str, object] | None = None,
     ) -> AgentRun:
-        await recorder.step("model_error", json.dumps({"message": message}, ensure_ascii=False))
+        await recorder.step(
+            "model_error",
+            json.dumps({"message": message, "error_info": error_info}, ensure_ascii=False),
+        )
         await self._complete_run(run, recorder, RunStatus.failed, message)
         run.used_tools = used_tools  # type: ignore[attr-defined]
         return run
@@ -644,8 +666,12 @@ class AgentRunner:
         ) -> None:
             await self._complete_run(run, recorder, status, final_answer)
 
-        async def on_failure(message: str, latency_metric: dict[str, object] | None) -> None:
-            await self._fail_run(run, recorder, message, state.used_tools)
+        async def on_failure(
+            message: str,
+            latency_metric: dict[str, object] | None,
+            error_info: dict[str, object] | None,
+        ) -> None:
+            await self._fail_run(run, recorder, message, state.used_tools, error_info=error_info)
 
         for _ in range(self.max_loops):
             cycle = await self._run_turn_cycle(
@@ -716,13 +742,18 @@ class AgentRunner:
             ):
                 nonlocal_async_events.append(event)
 
-        async def on_failure(message: str, latency_metric: dict[str, object] | None) -> None:
+        async def on_failure(
+            message: str,
+            latency_metric: dict[str, object] | None,
+            error_info: dict[str, object] | None,
+        ) -> None:
             async for event in self._fail_stream_run(
                 run,
                 recorder,
                 message,
                 state.used_tools,
                 latency_metric,
+                error_info=error_info,
             ):
                 nonlocal_async_events.append(event)
 
@@ -768,8 +799,12 @@ class AgentRunner:
         message: str,
         used_tools: list[str],
         latency_metric: dict[str, object] | None = None,
+        error_info: dict[str, object] | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        model_error = await recorder.step("model_error", json.dumps({"message": message}, ensure_ascii=False))
+        model_error = await recorder.step(
+            "model_error",
+            json.dumps({"message": message, "error_info": error_info}, ensure_ascii=False),
+        )
         yield recorder.event_for_step(model_error)
         async for event in self._finish_stream_run(
             run,
