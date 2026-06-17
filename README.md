@@ -26,6 +26,7 @@
 - 分层记忆模型：`scope/category/source_kind/confidence`、保守关键词检索、可解释评分、使用反馈、保守冲突处理、用户可控管理闭环与 `memory_versions` 版本审计记录
 - 结构化会话摘要：`session_summaries.summary_json`、摘要 trace、chat/stream 持久化一致性
 - 预算驱动上下文组装：块级 `context_trace`、裁剪观察、TUI 可视化
+- AgentRunner 共享单轮驱动：`run()` / `stream()` 复用同一套 turn cycle、工具执行入口和流式指标收口
 - 真实 Claude / OpenAI / OpenAI-compatible 模型接入
 - pytest 测试
 - Docker 本地启动配置

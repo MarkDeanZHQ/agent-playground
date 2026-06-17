@@ -1,6 +1,6 @@
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,6 +59,19 @@ class _ToolExecutionTrace:
     call: ToolCall
     result: ToolCallResult
     tool_result_step: AgentStep
+
+
+@dataclass
+class _TurnCycleResult:
+    should_continue: bool
+    final_answer: str | None = None
+
+
+_StepEmitter = Callable[[AgentStep], Awaitable[None]]
+_ToolTraceEmitter = Callable[[_ToolExecutionTrace], Awaitable[None]]
+_MessageDeltaEmitter = Callable[[str], Awaitable[None]]
+_SuccessHandler = Callable[[RunStatus, str, bool, dict[str, object] | None], Awaitable[None]]
+_FailureHandler = Callable[[str, dict[str, object] | None], Awaitable[None]]
 
 
 class ContextBuilder:
@@ -330,8 +343,8 @@ class AgentRunner:
         self,
         recorder: TraceRecorder,
         pending_tool_results: list[ToolCallResult],
-    ) -> None:
-        await recorder.step(
+    ) -> AgentStep:
+        return await recorder.step(
             "model_request",
             json.dumps(self._model_request_payload(pending_tool_results), ensure_ascii=False),
         )
@@ -392,6 +405,112 @@ class AgentRunner:
             traces.append(_ToolExecutionTrace(tool_call_step, call, result, tool_result_step))
         state.pending_tool_results = current_tool_results
         return traces
+
+    async def _collect_stream_turn(
+        self,
+        user_message: str,
+        context: str,
+        pending_tool_results: list[ToolCallResult],
+        metrics: _StreamMetrics,
+        emit_message_delta: _MessageDeltaEmitter,
+    ) -> tuple[ModelTurn, str]:
+        streamed_text = ""
+        turn: ModelTurn | None = None
+        model_stream_started_at = time.perf_counter()
+        try:
+            async for part in self.model.stream_turn(user_message, context, pending_tool_results):
+                if isinstance(part, str):
+                    streamed_text += part
+                    metrics.record_delta(part)
+                    await emit_message_delta(part)
+                else:
+                    turn = part
+        except ModelAdapterError:
+            metrics.record_model_duration(model_stream_started_at)
+            raise
+        except Exception:
+            metrics.record_model_duration(model_stream_started_at)
+            raise
+        metrics.record_model_duration(model_stream_started_at)
+        if turn is None:
+            raise ModelAdapterError("Model stream ended without a final turn.")
+        return turn, streamed_text
+
+    async def _run_turn_cycle(
+        self,
+        recorder: TraceRecorder,
+        user_message: str,
+        memories: list[RetrievedMemory | str],
+        recent_messages: list[tuple[str, str]] | None,
+        session_summary: SummaryResult | None,
+        state: _RunLoopState,
+        emit_step: _StepEmitter,
+        emit_tool_trace: _ToolTraceEmitter,
+        emit_message_delta: _MessageDeltaEmitter,
+        on_success: _SuccessHandler,
+        on_failure: _FailureHandler,
+        stream_metrics: _StreamMetrics | None = None,
+    ) -> _TurnCycleResult:
+        context, context_trace = self._build_context(
+            user_message,
+            memories,
+            recent_messages,
+            session_summary,
+            state,
+        )
+        context_step = await self._record_context(recorder, context, context_trace)
+        await emit_step(context_step)
+        model_request = await self._record_model_request(recorder, state.pending_tool_results)
+        await emit_step(model_request)
+
+        try:
+            if stream_metrics is None:
+                turn = await self._next_turn(user_message, context, state.pending_tool_results)
+                streamed_text = ""
+            else:
+                turn, streamed_text = await self._collect_stream_turn(
+                    user_message,
+                    context,
+                    state.pending_tool_results,
+                    stream_metrics,
+                    emit_message_delta,
+                )
+        except ModelAdapterError as exc:
+            await on_failure(str(exc), stream_metrics.latency_payload() if stream_metrics is not None else None)
+            return _TurnCycleResult(should_continue=False)
+        except Exception as exc:
+            if stream_metrics is None:
+                raise
+            message = f"模型流式执行异常：{exc.__class__.__name__}: {exc}"
+            await on_failure(message, stream_metrics.latency_payload() if stream_metrics is not None else None)
+            return _TurnCycleResult(should_continue=False)
+
+        model_turn = await self._record_model_turn(recorder, turn)
+        await emit_step(model_turn)
+
+        if turn.kind == "final":
+            final_answer = turn.content or streamed_text
+            emit_delta = stream_metrics is not None and not streamed_text
+            if stream_metrics is not None and emit_delta:
+                stream_metrics.record_output(final_answer)
+            await on_success(
+                RunStatus.completed,
+                final_answer,
+                emit_delta,
+                stream_metrics.latency_payload() if stream_metrics is not None else None,
+            )
+            return _TurnCycleResult(should_continue=False, final_answer=final_answer)
+
+        if not turn.tool_calls:
+            await on_failure(
+                "Model requested a tool call without tool_call payload.",
+                stream_metrics.latency_payload() if stream_metrics is not None else None,
+            )
+            return _TurnCycleResult(should_continue=False)
+
+        for trace in await self._execute_tool_calls(recorder, turn, state):
+            await emit_tool_trace(trace)
+        return _TurnCycleResult(should_continue=True)
 
     async def _complete_run(
         self,
@@ -467,32 +586,44 @@ class AgentRunner:
         await self._initialize_run(session_id, user_message, memories, recorder, session_summary)
 
         state = _RunLoopState()
+
+        async def emit_step(_: AgentStep) -> None:
+            return None
+
+        async def emit_tool_trace(_: _ToolExecutionTrace) -> None:
+            return None
+
+        async def emit_message_delta(_: str) -> None:
+            return None
+
+        async def on_success(
+            status: RunStatus,
+            final_answer: str,
+            emit_delta: bool,
+            latency_metric: dict[str, object] | None,
+        ) -> None:
+            await self._complete_run(run, recorder, status, final_answer)
+
+        async def on_failure(message: str, latency_metric: dict[str, object] | None) -> None:
+            await self._fail_run(run, recorder, message, state.used_tools)
+
         for _ in range(self.max_loops):
-            context, context_trace = self._build_context(
+            cycle = await self._run_turn_cycle(
+                recorder,
                 user_message,
                 memories,
                 recent_messages,
                 session_summary,
                 state,
+                emit_step,
+                emit_tool_trace,
+                emit_message_delta,
+                on_success,
+                on_failure,
             )
-            await self._record_context(recorder, context, context_trace)
-            await self._record_model_request(recorder, state.pending_tool_results)
-            try:
-                turn = await self._next_turn(user_message, context, state.pending_tool_results)
-            except ModelAdapterError as exc:
-                return await self._fail_run(run, recorder, str(exc), state.used_tools)
-            await self._record_model_turn(recorder, turn)
-
-            if turn.kind == "final":
-                await self._complete_run(run, recorder, RunStatus.completed, turn.content or "")
+            if not cycle.should_continue:
                 run.used_tools = state.used_tools  # type: ignore[attr-defined]
                 return run
-
-            if not turn.tool_calls:
-                message = "Model requested a tool call without tool_call payload."
-                return await self._fail_run(run, recorder, message, state.used_tools)
-
-            await self._execute_tool_calls(recorder, turn, state)
 
         final_answer = "达到最大循环次数，Agent 已降级终止。"
         await self._complete_run(run, recorder, RunStatus.max_loops, final_answer)
@@ -516,106 +647,67 @@ class AgentRunner:
             yield recorder.event_for_step(step)
 
         state = _RunLoopState()
+
+        async def emit_step(step: AgentStep) -> None:
+            yield_event = recorder.event_for_step(step)
+            nonlocal_async_events.append(yield_event)
+
+        async def emit_tool_trace(trace: _ToolExecutionTrace) -> None:
+            nonlocal_async_events.append(recorder.event_for_step(trace.tool_call_step))
+            nonlocal_async_events.append(recorder.event_for_tool_result(trace.call, trace.result))
+            nonlocal_async_events.append(recorder.event_for_step(trace.tool_result_step))
+
+        async def emit_message_delta(text: str) -> None:
+            nonlocal_async_events.append(StreamEvent(event="message_delta", data={"run_id": run.id, "text": text}))
+
+        async def on_success(
+            status: RunStatus,
+            final_answer: str,
+            emit_delta: bool,
+            latency_metric: dict[str, object] | None,
+        ) -> None:
+            async for event in self._finish_stream_run(
+                run,
+                recorder,
+                status,
+                final_answer,
+                emit_delta,
+                latency_metric,
+            ):
+                nonlocal_async_events.append(event)
+
+        async def on_failure(message: str, latency_metric: dict[str, object] | None) -> None:
+            async for event in self._fail_stream_run(
+                run,
+                recorder,
+                message,
+                state.used_tools,
+                latency_metric,
+            ):
+                nonlocal_async_events.append(event)
+
+        nonlocal_async_events: list[StreamEvent] = []
         for _ in range(self.max_loops):
-            context, context_trace = self._build_context(
+            cycle = await self._run_turn_cycle(
+                recorder,
                 user_message,
                 memories,
                 recent_messages,
                 session_summary,
                 state,
+                emit_step,
+                emit_tool_trace,
+                emit_message_delta,
+                on_success,
+                on_failure,
+                metrics,
             )
-            context_step = await self._record_context(recorder, context, context_trace)
-            yield recorder.event_for_step(context_step)
-            model_request = await recorder.step(
-                "model_request",
-                json.dumps(self._model_request_payload(state.pending_tool_results), ensure_ascii=False),
-            )
-            yield recorder.event_for_step(model_request)
-
-            streamed_text = ""
-            turn: ModelTurn | None = None
-            model_stream_started_at = time.perf_counter()
-            try:
-                async for part in self.model.stream_turn(user_message, context, state.pending_tool_results):
-                    if isinstance(part, str):
-                        streamed_text += part
-                        metrics.record_delta(part)
-                        yield StreamEvent(event="message_delta", data={"run_id": run.id, "text": part})
-                    else:
-                        turn = part
-            except ModelAdapterError as exc:
-                metrics.record_model_duration(model_stream_started_at)
-                async for event in self._fail_stream_run(
-                    run,
-                    recorder,
-                    str(exc),
-                    state.used_tools,
-                    metrics.latency_payload(),
-                ):
-                    yield event
-                return
-            except Exception as exc:
-                metrics.record_model_duration(model_stream_started_at)
-                message = f"模型流式执行异常：{exc.__class__.__name__}: {exc}"
-                async for event in self._fail_stream_run(
-                    run,
-                    recorder,
-                    message,
-                    state.used_tools,
-                    metrics.latency_payload(),
-                ):
-                    yield event
-                return
-            metrics.record_model_duration(model_stream_started_at)
-
-            if turn is None:
-                message = "Model stream ended without a final turn."
-                async for event in self._fail_stream_run(
-                    run,
-                    recorder,
-                    message,
-                    state.used_tools,
-                    metrics.latency_payload(),
-                ):
-                    yield event
-                return
-
-            model_turn = await self._record_model_turn(recorder, turn)
-            yield recorder.event_for_step(model_turn)
-
-            if turn.kind == "final":
-                final_answer = turn.content or streamed_text
-                emit_delta = not streamed_text
-                if emit_delta:
-                    metrics.record_output(final_answer)
-                async for event in self._finish_stream_run(
-                    run,
-                    recorder,
-                    RunStatus.completed,
-                    final_answer,
-                    emit_delta,
-                    metrics.latency_payload(),
-                ):
-                    yield event
+            for event in nonlocal_async_events:
+                yield event
+            nonlocal_async_events.clear()
+            if not cycle.should_continue:
                 run.used_tools = state.used_tools  # type: ignore[attr-defined]
                 return
-
-            if not turn.tool_calls:
-                message = "Model requested a tool call without tool_call payload."
-                async for event in self._fail_stream_run(
-                    run,
-                    recorder,
-                    message,
-                    state.used_tools,
-                    metrics.latency_payload(),
-                ):
-                    yield event
-                return
-
-            for trace in await self._execute_tool_calls(recorder, turn, state):
-                yield recorder.event_for_step(trace.tool_call_step)
-                yield recorder.event_for_tool_result(trace.call, trace.result)
-                yield recorder.event_for_step(trace.tool_result_step)
 
         final_answer = "达到最大循环次数，Agent 已降级终止。"
         metrics.record_output(final_answer)
