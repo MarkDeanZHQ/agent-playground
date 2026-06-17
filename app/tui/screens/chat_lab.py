@@ -16,7 +16,7 @@ from app.tui.widgets import ScreenNavBar, format_http_error, page_shortcuts, pag
 
 class ChatLabScreen(Screen[None]):
     BINDINGS = [
-        ("f3", "show_last_run", "最近 Trace"),
+        ("t", "show_last_run", "最近 Trace"),
         ("escape", "cancel_run", "取消请求"),
         ("ctrl+c", "cancel_run", "取消请求"),
     ]
@@ -36,7 +36,7 @@ class ChatLabScreen(Screen[None]):
                 classes="page-title",
             )
             yield Static(
-                page_shortcuts("Enter 发送", "Esc/Ctrl+C 取消", "F3 查看最近 Trace"),
+                page_shortcuts("Enter 发送", "Esc/Ctrl+C 取消", "t 查看最近 Trace"),
                 id="chat-shortcuts",
                 classes="page-shortcuts",
             )
@@ -104,7 +104,7 @@ class ChatLabScreen(Screen[None]):
             self.current_worker = None
         self._write_message_summary(conversation, state)
         if not state.get("error_text"):
-            status.update("已完成。按 F3 查看最近一次 Run Trace，或继续输入消息。")
+            status.update("已完成。按 t 查看最近一次 Run Trace，或继续输入消息。")
 
     def _capture_event_state(self, event: SseEvent, state: dict[str, object]) -> None:
         if self.session_id is None and event.data.get("session_id"):

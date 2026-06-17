@@ -91,6 +91,7 @@ class CreateMemoryRequest(BaseModel):
     session_id: str | None = None
     owner_id: str | None = None
     sensitivity: str = "public"
+    expires_at: datetime | None = None
 
     @field_validator("content")
     @classmethod
@@ -112,6 +113,7 @@ class UpdateMemoryRequest(BaseModel):
     session_id: str | None = None
     owner_id: str | None = None
     sensitivity: str | None = None
+    expires_at: datetime | None = None
 
     @field_validator("content")
     @classmethod
@@ -136,6 +138,7 @@ class UpdateMemoryRequest(BaseModel):
             and self.session_id is None
             and self.owner_id is None
             and self.sensitivity is None
+            and self.expires_at is None
         ):
             raise ValueError("at least one field must be provided")
         return self
@@ -161,6 +164,7 @@ class MemoryResponse(BaseModel):
     owner_id: str | None = None
     sensitivity: str
     supersedes_memory_id: str | None = None
+    expires_at: datetime | None = None
     importance: int
     status: str
     source_message_id: str | None = None

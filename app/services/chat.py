@@ -32,8 +32,8 @@ class ChatService:
         self.db.add(user_db_message)
         await self.db.flush()
 
-        recent_messages = await self._recent_messages(session.id)
-        memories = await self.memory.retrieve_matches(user_message)
+        recent_messages = await self._recent_messages(session.id, exclude_message_id=user_db_message.id)
+        memories = await self.memory.retrieve_matches(user_message, session_id=session.id)
         await self.memory.mark_used([memory.id for memory in memories])
         runner = AgentRunner(self.db, self.tools)
         run = await runner.run(session.id, user_message, memories, recent_messages, summary_result)
@@ -71,8 +71,8 @@ class ChatService:
             self.db.add(user_db_message)
             await self.db.flush()
 
-            recent_messages = await self._recent_messages(session.id)
-            memories = await self.memory.retrieve_matches(user_message)
+            recent_messages = await self._recent_messages(session.id, exclude_message_id=user_db_message.id)
+            memories = await self.memory.retrieve_matches(user_message, session_id=session.id)
             await self.memory.mark_used([memory.id for memory in memories])
             if memories:
                 yield self._encode_sse(
@@ -155,9 +155,18 @@ class ChatService:
         await self.db.flush()
         return session
 
-    async def _recent_messages(self, session_id: str, limit: int = 6) -> list[tuple[str, str]]:
+    async def _recent_messages(
+        self,
+        session_id: str,
+        limit: int = 6,
+        exclude_message_id: str | None = None,
+    ) -> list[tuple[str, str]]:
+        statement = select(Message).where(Message.session_id == session_id)
+        if exclude_message_id is not None:
+            statement = statement.where(Message.id != exclude_message_id)
+        statement = statement.order_by(Message.created_at.desc()).limit(limit)
         result = await self.db.execute(
-            select(Message).where(Message.session_id == session_id).order_by(Message.created_at.desc()).limit(limit)
+            statement
         )
         messages = list(result.scalars())
         recent: list[tuple[str, str]] = []
@@ -169,21 +178,35 @@ class ChatService:
     async def _extract_and_trace_memory(self, run: AgentRun, message_id: str, text: str) -> None:
         await self._trace_memory_step(run.id, "memory_extraction_started", {"message_id": message_id})
         should_store, reason = self.memory.policy.decision(text)
+        candidate = self.memory.candidate_content(text)
+        conflict_decision = (
+            await self.memory.resolve_conflict(candidate, text, run.session_id) if should_store else None
+        )
         await self._trace_memory_step(
             run.id,
             "memory_policy_decision",
-            {"should_store": should_store, "reason": reason, "candidate": self.memory.candidate_content(text)},
+            {
+                "should_store": should_store,
+                "reason": reason,
+                "candidate": candidate,
+                "conflict_decision": self._conflict_decision_payload(conflict_decision),
+            },
         )
-        candidate = self.memory.candidate_content(text)
-        superseded = []
-        if should_store:
-            superseded = await self.memory.find_supersede_candidates(candidate, text)
-        memories = await self.memory.extract_and_store(message_id, text)
+        superseded = (
+            await self.memory.find_supersede_candidates(candidate, text, run.session_id) if should_store else []
+        )
+        memories = await self.memory.extract_and_store(message_id, text, run.session_id)
         for memory in superseded:
             await self._trace_memory_step(
                 run.id,
                 "memory_superseded",
-                {"memory_id": memory.id, "content": memory.content, "conflict_key": memory.conflict_key},
+                {
+                    "memory_id": memory.id,
+                    "content": memory.content,
+                    "conflict_key": memory.conflict_key,
+                    "resolution": "supersedes",
+                    "reason": conflict_decision.reason if conflict_decision else "",
+                },
             )
         if memories:
             for memory in memories:
@@ -198,6 +221,9 @@ class ChatService:
                         "category": memory.category,
                         "source_kind": memory.source_kind,
                         "confidence": memory.confidence,
+                        "session_id": memory.session_id,
+                        "supersedes_memory_id": memory.supersedes_memory_id,
+                        "conflict_resolution": conflict_decision.resolution if conflict_decision else "no_conflict",
                     },
                 )
         else:
@@ -226,3 +252,14 @@ class ChatService:
 
     def _encode_sse(self, event: StreamEvent) -> str:
         return f"event: {event.event}\ndata: {json.dumps(event.data, ensure_ascii=False)}\n\n"
+
+    def _conflict_decision_payload(self, decision) -> dict[str, object] | None:
+        if decision is None:
+            return None
+        return {
+            "resolution": decision.resolution,
+            "reason": decision.reason,
+            "conflict_key": decision.conflict_key,
+            "candidate_ids": decision.candidate_ids,
+            "superseded_ids": decision.superseded_ids,
+        }

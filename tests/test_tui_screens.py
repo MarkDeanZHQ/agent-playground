@@ -2,8 +2,12 @@ import httpx
 
 from app.tui.client import AgentPlaygroundClient
 from app.tui.main import AgentPlaygroundTui
+from app.tui.screens.chat_lab import ChatLabScreen
+from app.tui.screens.dashboard import DashboardScreen
 from app.tui.screens.memory_lab import MemoryLabScreen
+from app.tui.screens.run_trace import RunTraceScreen
 from app.tui.screens.tools_lab import (
+    ToolsLabScreen,
     format_history_entry,
     format_schema_validation_error,
     format_tool_json_error,
@@ -29,6 +33,10 @@ from app.tui.widgets import (
     page_shortcuts,
     page_title,
 )
+
+
+def binding_key(binding):
+    return binding.key if hasattr(binding, "key") else binding[0]
 
 
 def test_tui_app_title_and_subtitle_are_learning_oriented():
@@ -64,6 +72,30 @@ def test_screen_nav_bar_items_match_global_page_switch_keys():
         ("f5", "memory_lab", "Memory"),
         ("f6", "validation_lab", "Validation"),
     ]
+
+
+def test_global_page_switch_keys_have_priority_over_focused_widgets():
+    page_keys = {"f1", "f2", "f3", "f4", "f5", "f6"}
+    bindings = [binding for binding in AgentPlaygroundTui.BINDINGS if binding_key(binding) in page_keys]
+
+    assert {binding_key(binding) for binding in bindings} == page_keys
+    assert all(binding.priority for binding in bindings)
+
+
+def test_page_local_shortcuts_do_not_shadow_global_page_switch_keys():
+    page_keys = {"f1", "f2", "f3", "f4", "f5", "f6"}
+    screen_classes = [
+        DashboardScreen,
+        ChatLabScreen,
+        RunTraceScreen,
+        ToolsLabScreen,
+        MemoryLabScreen,
+        ValidationLabScreen,
+    ]
+
+    for screen_class in screen_classes:
+        local_keys = {binding_key(binding) for binding in screen_class.BINDINGS}
+        assert local_keys.isdisjoint(page_keys), screen_class.__name__
 
 
 def test_screen_nav_bar_marks_active_page_and_uses_clickable_ids():

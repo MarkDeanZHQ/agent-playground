@@ -8,10 +8,12 @@
 
 - 自动抽取时，只保存包含“记住 / remember / 偏好”等信号的内容；
 - 支持 API 和 TUI 手动新增、编辑、归档、软删除、恢复记忆；
-- 使用保守关键词提取 + 两阶段检索：先用少量高置信 term 做 DB 粗过滤，再在 Python 中按命中质量、`importance`、使用次数和更新时间精排；
+- 使用保守关键词提取 + 两阶段检索：先用少量高置信 term 做 DB 粗过滤，再在 Python 中按命中质量、`importance`、使用次数、置信度、scope 和更新时间精排；
 - 不做中文 n-gram 全展开，不引入 embedding、向量数据库或 reranker；
 - Agent 运行时默认只检索并注入 `active` 记忆，注入后回写 `use_count` / `last_used_at`；
+- `project` / `user` 级记忆跨 session 可见，`session` 级记忆只在同一个 session 内可见；
 - 支持 `active` / `superseded` / `archived` / `deleted` 状态；
+- 支持 `expires_at` 轻量生命周期，过期的 active 记忆会在检索或列表查询前标记为 `invalidated`；
 - 每次新增、编辑、覆盖或实际状态变更都会写入 `memory_versions`；`use_count` / `last_used_at` 属于统计信息，不写版本。
 
 会话摘要是另一层短期上下文压缩，不是长期记忆：它保存在 `session_summaries`，只负责压缩单个 session 的早期消息，不参与长期检索，也不会写入 `memory_versions`。
@@ -22,10 +24,11 @@
 |---|---|---:|---:|---:|
 | `active` | 当前有效记忆 | 是 | 是 | 不适用 |
 | `superseded` | 被系统新记忆替代的历史记忆 | 否 | 否 | 否 |
+| `invalidated` | 因过期等规则失效的历史记忆 | 否 | 否 | 否 |
 | `archived` | 用户主动归档，保留但不再注入上下文 | 否 | 是 | 是，恢复为 `active` |
 | `deleted` | 用户软删除，仍保留审计记录 | 否 | 否 | 是，恢复为 `active` |
 
-`superseded` 是系统历史状态，只读，不能归档、软删除或恢复，避免历史记忆被误恢复为 `active` 后污染后续检索。
+`superseded` 与 `invalidated` 是系统历史状态，只读，不能归档、软删除或恢复，避免历史记忆被误恢复为 `active` 后污染后续检索。
 
 ## 对应代码
 
@@ -91,20 +94,28 @@ curl 'http://127.0.0.1:8000/api/v1/memories?status=deleted'
 
 ## 冲突与版本
 
-冲突处理采用保守策略：系统会从内容派生 `conflict_key`，但同一个 `conflict_key` 不等于一定冲突。只有新记忆能提取 `conflict_key`、存在同 key 的 `active` 记忆，并且用户原文包含明确替换信号（如“以后用 / 改为 / 替换成 / 不再 / instead”）时，旧记忆才会被标记为 `superseded`，同时写入 `MemoryVersion(operation="superseded")`；新记忆写入 `MemoryVersion(operation="created")`。普通“我偏好 X”默认新增，不替代。
+冲突处理采用保守策略：系统会从内容派生 `conflict_key`，但同一个 `conflict_key` 不等于一定冲突。决策会显式记录为：
+
+- `no_conflict`：没有冲突键，或同范围内没有同 key 的 active 记忆；
+- `pending_confirmation`：命中同一冲突键，但用户没有表达替换意图，保守并存并等待后续确认；
+- `supersedes`：命中同一冲突键且用户原文包含明确替换信号（如“以后用 / 改为 / 替换成 / 不再 / instead”）；
+- `invalidated`：记忆因过期等规则失效，不再参与检索。
+
+当决策为 `supersedes` 时，旧记忆会标记为 `superseded`，同时写入 `MemoryVersion(operation="superseded")`；新记忆写入 `MemoryVersion(operation="created")`，并通过 `supersedes_memory_id` 指向旧记忆。普通“我偏好 X”默认新增，不替代。
 
 用户管理动作会记录以下版本操作：
 
 - `created`
 - `updated`
 - `superseded`
+- `invalidated`
 - `archived`
 - `deleted`
 - `restored`
 
 幂等的重复归档、重复软删除、重复恢复不会重复写入无意义版本。
 
-这不是生产级 RAG 或自然语言推理式冲突解决，只是用可解释的关键词、分数、使用反馈和明确替换信号，让学习者能看见“记忆不是简单追加”的基本问题。
+这不是生产级 RAG 或自然语言推理式冲突解决，只是用可解释的关键词、分数、使用反馈、scope 过滤和明确替换信号，让学习者能看见“记忆不是简单追加”的基本问题。
 
 ## 对应测试
 

@@ -22,7 +22,7 @@ uv run python -m app.tui.main
 
 1. `F1` 查看 Dashboard，确认 API、模型、工具、记忆和最近 Run 状态；
 2. `F2` 进入 Chat Lab，发送“请统计 hello world”；
-3. 在 Chat Lab 按 `F3` 查看最近一次 Run Trace；
+3. 在 Chat Lab 按 `t` 查看最近一次 Run Trace；
 4. `F4` 进入 Tools Lab，查看 schema 并手动调用工具；
 5. `F5` 进入 Memory Lab，检索长期记忆；
 6. `F6` 进入 Validation Lab，先运行核心学习闭环，再看附加自检。
@@ -35,7 +35,7 @@ uv run python -m app.tui.main
 |---|---|---|
 | `F1` | Dashboard/总览 | 查看 API、provider、模型健康、工具/记忆/run 概览 |
 | `F2` | Chat/对话 | 发送消息，触发 Agent Loop |
-| `F3` | Trace/轨迹 | 复盘每一步 trace；在 Chat Lab 内表示查看最近一次 Run Trace |
+| `F3` | Trace/轨迹 | 复盘每一步 trace |
 | `F4` | Tools/工具 | 查看和手动调用工具 |
 | `F5` | Memory/记忆 | 检索、管理记忆和查看 versions |
 | `F6` | Validation/验收 | 运行学习验收台，区分核心闭环、环境配置、开发质量 |
@@ -54,7 +54,7 @@ uv run python -m app.tui.main
 ## 界面导览
 
 - **Dashboard｜总览**：显示 API、模型、工具、记忆与最近 Run 状态。页面顶部提示 `r` 刷新和 `l` 真实模型检查；`l` 会请求真实模型供应商，可能产生 token 成本或触发限流。
-- **Chat Lab｜对话实验**：左侧 Conversation 展示用户与 Agent 的可读对话；右侧 Live Trace 展示模型请求、工具调用、记忆、摘要和延迟事件。页面顶部提示 `Enter` 发送、`Esc/Ctrl+C` 取消、`F3` 查看最近 Trace。`session_summary_used` 会在会话摘要参与上下文时显示。Loading / Done 写入页面状态栏，不刷屏污染对话日志。
+- **Chat Lab｜对话实验**：左侧 Conversation 展示用户与 Agent 的可读对话；右侧 Live Trace 展示模型请求、工具调用、记忆、摘要和延迟事件。页面顶部提示 `Enter` 发送、`Esc/Ctrl+C` 取消、`t` 查看最近 Trace。`session_summary_used` 会在会话摘要参与上下文时显示。Loading / Done 写入页面状态栏，不刷屏污染对话日志。
 - **Run Trace｜执行轨迹**：Runs、Steps、Detail 三栏用于复盘一次 Agent 执行中的 step、summary、tool call 与最终结果。页面顶部提示方向键选择、`Enter` 查看详情、`r` 刷新。没有 runs 时会提示去 Chat Lab 产生一条记录。
 - **Tools Lab｜工具实验**：Tools、Learning Panel、Invoke、Result、History 五块区域用于查看工具摘要、参数表、学习点、原始 schema、最近手动调用历史，并编辑 JSON 参数调用工具。页面顶部提示方向键选择、`Ctrl+Enter/i` 调用、`e` 切换示例、`s` 送到 Chat、`t` 最近 Trace、`r` 刷新。优先使用工具定义里的 `examples` 填充参数，没有 examples 时才回退 schema 自动样例。
 - **Memory Lab｜记忆实验**：Memories、Detail 与底部 Editor 用于检索长期记忆、查看状态、来源、`use_count`、`last_used_at`、`conflict_key` 和版本变化，并支持手动新增、编辑、归档、软删除和恢复。页面顶部提示 `Enter` 搜索、`Ctrl+N` 新增、`Ctrl+S` 保存、`Ctrl+D` 删除。列表会显示使用次数与冲突分组，Detail 会提示当前排序规则：命中质量优先，其次 importance、使用次数、更新时间。没有记忆时会提示通过 Editor 或 Chat Lab 写入示例记忆。

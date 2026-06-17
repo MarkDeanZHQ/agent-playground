@@ -62,6 +62,7 @@ def _memory_response(memory: Memory) -> MemoryResponse:
         owner_id=memory.owner_id,
         sensitivity=memory.sensitivity,
         supersedes_memory_id=memory.supersedes_memory_id,
+        expires_at=memory.expires_at,
         importance=memory.importance,
         status=_memory_status_value(memory.status),
         source_message_id=memory.source_message_id,
@@ -413,7 +414,9 @@ async def list_memories(
     limit: int = 20,
     db: AsyncSession = Depends(get_session),
 ) -> list[MemoryResponse]:
-    memories = await MemoryService(db).list_memories(query=query, status=status, limit=limit)
+    service = MemoryService(db)
+    await service.invalidate_expired()
+    memories = await service.list_memories(query=query, status=status, limit=limit)
     for memory in memories:
         await db.refresh(memory, attribute_names=["versions"])
     return [_memory_response(memory) for memory in memories]
@@ -437,6 +440,7 @@ async def create_memory(
             session_id=payload.session_id,
             owner_id=payload.owner_id,
             sensitivity=payload.sensitivity,
+            expires_at=payload.expires_at,
         )
         return await _commit_memory_response(db, memory)
     except (MemoryNotFoundError, InvalidMemoryOperationError, InvalidMemoryPayloadError) as exc:
@@ -464,6 +468,7 @@ async def update_memory(
             session_id=payload.session_id,
             owner_id=payload.owner_id,
             sensitivity=payload.sensitivity,
+            expires_at=payload.expires_at,
         )
         return await _commit_memory_response(db, memory)
     except (MemoryNotFoundError, InvalidMemoryOperationError, InvalidMemoryPayloadError) as exc:

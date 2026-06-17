@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -137,6 +138,7 @@ async def test_memories_endpoint_supports_query_status_and_source_fields():
     assert any("FastAPI" in memory["content"] for memory in memories)
     assert {"source_message_id", "created_at", "updated_at"}.issubset(memories[0])
     assert {"scope", "category", "source_kind", "confidence", "sensitivity"}.issubset(memories[0])
+    assert "expires_at" in memories[0]
 
 
 @pytest.mark.asyncio
@@ -144,7 +146,12 @@ async def test_memory_management_endpoints_complete_lifecycle():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         create_response = await client.post(
             "/api/v1/memories",
-            json={"content": " 手动 API 记忆 ", "importance": 3, "memory_type": "preference"},
+            json={
+                "content": " 手动 API 记忆 ",
+                "importance": 3,
+                "memory_type": "preference",
+                "expires_at": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+            },
         )
         memory = create_response.json()
 
@@ -161,6 +168,7 @@ async def test_memory_management_endpoints_complete_lifecycle():
     assert create_response.json()["content"] == "手动 API 记忆"
     assert create_response.json()["scope"] == "project"
     assert create_response.json()["category"] == "preference"
+    assert create_response.json()["expires_at"] is not None
     assert update_response.status_code == 200
     assert update_response.json()["content"] == "更新后的 API 记忆"
     assert archive_response.status_code == 200
@@ -205,8 +213,14 @@ async def test_memory_management_endpoints_reject_invalid_state_transitions():
         await client.post(f"/api/v1/memories/{memory_id}/delete")
         update_deleted_response = await client.patch(f"/api/v1/memories/{memory_id}", json={"content": "should fail"})
 
-        await client.post("/api/v1/chat", json={"message": "请记住：我偏好 superseded API 示例"})
-        await client.post("/api/v1/chat", json={"message": "请记住：我偏好以后用 superseded API 示例 v2"})
+        first_response = await client.post("/api/v1/chat", json={"message": "请记住：我偏好 superseded API 示例"})
+        await client.post(
+            "/api/v1/chat",
+            json={
+                "message": "请记住：我偏好以后用 superseded API 示例 v2",
+                "session_id": first_response.json()["session_id"],
+            },
+        )
         superseded_list = await client.get("/api/v1/memories", params={"status": "superseded", "query": "superseded"})
         superseded_id = superseded_list.json()[0]["id"]
         restore_superseded_response = await client.post(f"/api/v1/memories/{superseded_id}/restore")
@@ -218,8 +232,14 @@ async def test_memory_management_endpoints_reject_invalid_state_transitions():
 @pytest.mark.asyncio
 async def test_memory_superseded_trace_is_recorded():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        await client.post("/api/v1/chat", json={"message": "请记住：我偏好 FastAPI 示例"})
-        chat_response = await client.post("/api/v1/chat", json={"message": "请记住：我偏好以后用 FastAPI 示例 v2"})
+        first_response = await client.post("/api/v1/chat", json={"message": "请记住：我偏好 FastAPI 示例"})
+        chat_response = await client.post(
+            "/api/v1/chat",
+            json={
+                "message": "请记住：我偏好以后用 FastAPI 示例 v2",
+                "session_id": first_response.json()["session_id"],
+            },
+        )
         run_id = chat_response.json()["run_id"]
         trace_response = await client.get(f"/api/v1/runs/{run_id}")
 
@@ -227,6 +247,57 @@ async def test_memory_superseded_trace_is_recorded():
     kinds = {step["kind"] for step in trace_response.json()["steps"]}
     assert "memory_superseded" in kinds
     assert "memory_saved" in kinds
+
+
+@pytest.mark.asyncio
+async def test_memories_endpoint_invalidates_expired_memory():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        create_response = await client.post(
+            "/api/v1/memories",
+            json={
+                "content": "我偏好 expired-api FastAPI 示例",
+                "expires_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+            },
+        )
+        active_response = await client.get("/api/v1/memories", params={"query": "expired-api", "status": "active"})
+        invalidated_response = await client.get(
+            "/api/v1/memories",
+            params={"query": "expired-api", "status": "invalidated"},
+        )
+
+    assert create_response.status_code == 200
+    assert active_response.json() == []
+    invalidated = invalidated_response.json()
+    assert invalidated[0]["id"] == create_response.json()["id"]
+    assert invalidated[0]["status"] == "invalidated"
+
+
+@pytest.mark.asyncio
+async def test_chat_memory_trace_records_pending_confirmation_for_same_conflict_key():
+    token = uuid4().hex[:8]
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first_response = await client.post(
+            "/api/v1/chat",
+            json={"message": f"请记住：我偏好 FastAPI pending-confirm {token} 示例"},
+        )
+        second_response = await client.post(
+            "/api/v1/chat",
+            json={
+                "message": f"请记住：我偏好 Django pending-confirm {token} 示例",
+                "session_id": first_response.json()["session_id"],
+            },
+        )
+        trace_response = await client.get(f"/api/v1/runs/{second_response.json()['run_id']}")
+        memories_response = await client.get("/api/v1/memories", params={"query": token})
+
+    active_memories = [memory for memory in memories_response.json() if memory["status"] == "active"]
+    assert len(active_memories) == 2
+    steps = trace_response.json()["steps"]
+    policy_payload = json.loads(next(step["content"] for step in steps if step["kind"] == "memory_policy_decision"))
+    saved_payload = json.loads(next(step["content"] for step in steps if step["kind"] == "memory_saved"))
+    assert policy_payload["conflict_decision"]["resolution"] == "pending_confirmation"
+    assert saved_payload["conflict_resolution"] == "pending_confirmation"
+    assert saved_payload["supersedes_memory_id"] is None
 
 
 @pytest.mark.asyncio
@@ -311,7 +382,11 @@ async def test_long_session_context_includes_summary_without_current_message(mon
     context = contexts[0]
     assert "session_summary:" in context
     assert "recent_messages:" in context
+    recent_section = context.split("recent_messages:", 1)[1].split("\n\n", 1)[0]
+    assert current_message not in recent_section
     assert context_traces[0]["blocks"]
+    assert context_traces[0]["total_budget_chars"] > 0
+    assert context_traces[0]["budget_unit"] == "chars"
     summary_step = next(step for step in steps if step["kind"] == "session_summary_used")
     summary = json.loads(summary_step["content"])["summary"]
     summary_json = json.loads(summary_step["content"])["summary_json"]
@@ -374,6 +449,40 @@ async def test_chat_updates_memory_usage_and_trace_explains_retrieval():
     assert payload["matches"][0]["score"] > 0
     assert payload["matches"][0]["matched_terms"]
     assert payload["matches"][0]["reason"]
+    assert payload["matches"][0]["conflict_key"] == "preference:framework-example"
+    assert payload["matches"][0]["rank_signals"]["term_hits"] > 0
+
+
+@pytest.mark.asyncio
+async def test_chat_memory_trace_records_conflict_decision_and_supersedes_link():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first_response = await client.post(
+            "/api/v1/chat",
+            json={"message": "请记住：我偏好 FastAPI conflict-link 示例"},
+        )
+        second_response = await client.post(
+            "/api/v1/chat",
+            json={
+                "message": "请记住：我偏好以后用 Django conflict-link 示例",
+                "session_id": first_response.json()["session_id"],
+            },
+        )
+        trace_response = await client.get(f"/api/v1/runs/{second_response.json()['run_id']}")
+        memories_response = await client.get("/api/v1/memories", params={"query": "conflict-link"})
+
+    memories = memories_response.json()
+    active = next(memory for memory in memories if memory["status"] == "active")
+    superseded = next(memory for memory in memories if memory["status"] == "superseded")
+    assert active["supersedes_memory_id"] == superseded["id"]
+
+    steps = trace_response.json()["steps"]
+    policy_payload = json.loads(next(step["content"] for step in steps if step["kind"] == "memory_policy_decision"))
+    saved_payload = json.loads(next(step["content"] for step in steps if step["kind"] == "memory_saved"))
+    superseded_payload = json.loads(next(step["content"] for step in steps if step["kind"] == "memory_superseded"))
+    assert policy_payload["conflict_decision"]["resolution"] == "supersedes"
+    assert saved_payload["conflict_resolution"] == "supersedes"
+    assert saved_payload["supersedes_memory_id"] == superseded["id"]
+    assert superseded_payload["resolution"] == "supersedes"
 
 
 @pytest.mark.asyncio

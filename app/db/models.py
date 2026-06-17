@@ -33,6 +33,7 @@ class RunStatus(str, Enum):
 class MemoryStatus(str, Enum):
     active = "active"
     superseded = "superseded"
+    invalidated = "invalidated"
     archived = "archived"
     deleted = "deleted"
 

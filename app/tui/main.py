@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.widgets import Footer, Header
 
 from app.tui.client import AgentPlaygroundClient
@@ -75,12 +76,12 @@ class AgentPlaygroundTui(App[None]):
     #tool-result { height: 1fr; border: none; padding: 0 1; }
     """
     BINDINGS = [
-        ("f1", "show_dashboard", "Dashboard/总览"),
-        ("f2", "show_chat", "Chat/对话"),
-        ("f3", "show_trace", "Trace/轨迹"),
-        ("f4", "show_tools", "Tools/工具"),
-        ("f5", "show_memory", "Memory/记忆"),
-        ("f6", "show_validation", "Validation/验收"),
+        Binding("f1", "show_dashboard", "Dashboard/总览", priority=True),
+        Binding("f2", "show_chat", "Chat/对话", priority=True),
+        Binding("f3", "show_trace", "Trace/轨迹", priority=True),
+        Binding("f4", "show_tools", "Tools/工具", priority=True),
+        Binding("f5", "show_memory", "Memory/记忆", priority=True),
+        Binding("f6", "show_validation", "Validation/验收", priority=True),
         ("q", "quit", "退出"),
     ]
 

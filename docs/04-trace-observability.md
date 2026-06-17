@@ -9,7 +9,7 @@
 ```text
 run_started
 memory_retrieval_started
-memory_retrieved（包含 query、terms、score、matched_terms、reason）
+memory_retrieved（包含 query、terms、score、matched_terms、reason、rank_signals）
 session_summary_checked
 session_summary_updated（触发滚动摘要时出现）
 session_summary_used（摘要进入上下文时出现）
@@ -54,9 +54,13 @@ curl http://127.0.0.1:8000/api/v1/runs/<run_id>
 3. 左侧选择 run。
 4. 观察步骤列表和完整 JSON。
 
-`memory_retrieved` step 现在会记录检索解释：`terms` 是本轮保守提取的关键词，`matches` 中每条记忆包含 `memory_id`、`score`、`matched_terms` 和 `reason`。这能说明记忆为什么被注入上下文，也明确当前仍是轻量关键词检索，不是 embedding RAG。
+`memory_retrieved` step 现在会记录检索解释：`terms` 是本轮保守提取的关键词，`matches` 中每条记忆包含 `memory_id`、`score`、`matched_terms`、`reason`、`conflict_key` 和 `rank_signals`。这能说明记忆为什么被注入上下文，也明确当前仍是轻量关键词检索，不是 embedding RAG。`session` 级记忆只会在同一个 session 内被召回，`project` / `user` 级记忆可跨 session 召回。
+
+`memory_policy_decision` step 会记录自动抽取时的 `conflict_decision`。它用于区分 `no_conflict`、`pending_confirmation`、`supersedes` 和 `invalidated`；当出现替代时，`memory_saved` 会带上 `supersedes_memory_id`，`memory_superseded` 会记录被替代旧记忆。过期记忆会被标记为 `invalidated`，不再参与 `memory_retrieved`。
 
 `session_summary_*` step 用于观察长对话上下文压缩。摘要默认由确定性规则生成，不调用真实模型，也不产生额外 token 成本。摘要只覆盖当前 turn 之前、且不在最近消息窗口内的旧消息；当前用户消息仍通过 `current_user_message` 和最近消息窗口进入上下文，不会提前进入摘要。
+
+`context_built` step 会记录 `context_trace`。当前预算单位是字符，不是真实 token；payload 包含 `total_budget_chars`、`total_original_chars`、`total_final_chars`、`trimmed_blocks`、`dropped_blocks` 和每个 block 的 `source/decision/reason`。当前用户消息只通过 `current_user_message` 注入，recent window 会排除当前 user message，避免重复塞上下文。
 
 Claude 模式下重点观察：
 

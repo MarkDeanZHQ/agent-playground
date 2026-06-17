@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Memory, MemoryStatus, MemoryVersion, utc_now
+from app.db.models import Memory, MemoryStatus, MemoryVersion, Message, utc_now
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,17 @@ class RetrievedMemory:
     category: str
     source_kind: str
     confidence: int
+    conflict_key: str | None
+    rank_signals: dict[str, int]
+
+
+@dataclass(frozen=True)
+class MemoryConflictDecision:
+    resolution: str
+    reason: str
+    conflict_key: str | None
+    candidate_ids: list[str]
+    superseded_ids: list[str]
 
 
 TECHNICAL_TERMS = {
@@ -163,12 +174,18 @@ class MemoryService:
         query: str = "",
         limit: int = 3,
         status: MemoryStatus = MemoryStatus.active,
+        session_id: str | None = None,
     ) -> list[Memory]:
-        candidates, terms = await self._candidate_memories(query, limit, status)
+        candidates, terms = await self._candidate_memories(query, limit, status, session_id)
         return self._rank_memories(candidates, terms)[:limit]
 
-    async def retrieve_matches(self, query: str = "", limit: int = 3) -> list[RetrievedMemory]:
-        candidates, terms = await self._candidate_memories(query, limit, MemoryStatus.active)
+    async def retrieve_matches(
+        self,
+        query: str = "",
+        limit: int = 3,
+        session_id: str | None = None,
+    ) -> list[RetrievedMemory]:
+        candidates, terms = await self._candidate_memories(query, limit, MemoryStatus.active, session_id)
         ranked = self._rank_memories(candidates, terms)[:limit]
         return [self._to_retrieved_memory(memory, terms) for memory in ranked]
 
@@ -333,14 +350,16 @@ class MemoryService:
         await self.db.flush()
         return memory
 
-    async def extract_and_store(self, message_id: str, text: str) -> list[Memory]:
+    async def extract_and_store(self, message_id: str, text: str, session_id: str | None = None) -> list[Memory]:
         should_store, _reason = self.policy.decision(text)
         if not should_store:
             return []
 
+        effective_session_id = session_id or await self._session_id_for_message(message_id)
         content = self.candidate_content(text)
         conflict_key = conflict_key_for_content(content)
-        existing = await self.find_supersede_candidates(content, text)
+        decision = await self.resolve_conflict(content, text, effective_session_id)
+        existing = await self.find_supersede_candidates(content, text, effective_session_id)
         for memory in existing:
             if memory.content != content:
                 memory.status = MemoryStatus.superseded
@@ -355,6 +374,8 @@ class MemoryService:
             category="preference",
             source_kind="user_message",
             confidence=3,
+            session_id=effective_session_id,
+            supersedes_memory_id=decision.superseded_ids[0] if decision.superseded_ids else None,
             conflict_key=conflict_key,
         )
         self.db.add(memory)
@@ -363,17 +384,61 @@ class MemoryService:
         await self.db.flush()
         return [memory]
 
-    async def find_supersede_candidates(self, content: str, source_text: str) -> list[Memory]:
+    async def resolve_conflict(
+        self,
+        content: str,
+        source_text: str,
+        session_id: str | None = None,
+    ) -> MemoryConflictDecision:
         conflict_key = conflict_key_for_content(content)
-        if conflict_key is None or not has_replacement_marker(source_text):
+        if conflict_key is None:
+            return MemoryConflictDecision("no_conflict", "未派生出冲突键，按普通新增处理", None, [], [])
+        candidates = await self._conflict_candidates(conflict_key, session_id)
+        candidate_ids = [memory.id for memory in candidates if memory.content != content]
+        if not candidate_ids:
+            return MemoryConflictDecision(
+                "no_conflict",
+                "存在冲突键但没有同范围可替代的 active 记忆",
+                conflict_key,
+                [],
+                [],
+            )
+        if not has_replacement_marker(source_text):
+            return MemoryConflictDecision(
+                "pending_confirmation",
+                "命中同一冲突键，但用户没有表达替换意图，保守并存并等待后续确认",
+                conflict_key,
+                candidate_ids,
+                [],
+            )
+        return MemoryConflictDecision(
+            "supersedes",
+            "命中同一冲突键且用户表达了替换意图，旧记忆标记为 superseded",
+            conflict_key,
+            candidate_ids,
+            candidate_ids,
+        )
+
+    async def find_supersede_candidates(
+        self,
+        content: str,
+        source_text: str,
+        session_id: str | None = None,
+    ) -> list[Memory]:
+        decision = await self.resolve_conflict(content, source_text, session_id)
+        if decision.resolution != "supersedes":
             return []
+        return await self._memories_by_ids(decision.superseded_ids)
+
+    async def _conflict_candidates(self, conflict_key: str, session_id: str | None) -> list[Memory]:
         result = await self.db.execute(
             select(Memory).where(
                 Memory.status == MemoryStatus.active,
                 Memory.conflict_key == conflict_key,
+                self._visible_scope_filter(session_id),
             )
         )
-        return [memory for memory in result.scalars() if memory.content != content]
+        return list(result.scalars())
 
     async def mark_used(self, memory_ids: Sequence[str]) -> None:
         unique_ids = {memory_id for memory_id in memory_ids if memory_id}
@@ -387,6 +452,11 @@ class MemoryService:
         )
         now = utc_now()
         for memory in result.scalars():
+            if self._is_expired(memory):
+                memory.status = MemoryStatus.invalidated
+                memory.updated_at = now
+                self._record_version(memory, "invalidated")
+                continue
             memory.use_count += 1
             memory.last_used_at = now
         await self.db.flush()
@@ -396,17 +466,50 @@ class MemoryService:
         query: str,
         limit: int,
         status: MemoryStatus,
+        session_id: str | None,
     ) -> tuple[list[Memory], list[str]]:
         safe_limit = min(max(limit, 1), 100)
         candidate_limit = min(max(safe_limit * 5, 20), 100)
         terms = extract_query_terms(query)
-        statement = select(Memory).where(Memory.status == status)
+        await self.invalidate_expired()
+        statement = select(Memory).where(
+            Memory.status == status,
+            self._visible_scope_filter(session_id),
+            self._not_expired_filter(),
+        )
         if terms:
             conditions = [func.lower(Memory.content).contains(term.lower()) for term in terms[:5]]
             statement = statement.where(or_(*conditions))
         statement = statement.order_by(Memory.importance.desc(), Memory.updated_at.desc()).limit(candidate_limit)
         result = await self.db.execute(statement)
         return list(result.scalars()), terms
+
+    def _visible_scope_filter(self, session_id: str | None):
+        stable_scopes = Memory.scope.in_(("project", "user"))
+        if session_id is None:
+            return stable_scopes
+        return or_(stable_scopes, Memory.session_id == session_id)
+
+    def _not_expired_filter(self):
+        return or_(Memory.expires_at.is_(None), Memory.expires_at > utc_now())
+
+    async def invalidate_expired(self) -> None:
+        now = utc_now()
+        result = await self.db.execute(
+            select(Memory).where(
+                Memory.status == MemoryStatus.active,
+                Memory.expires_at.is_not(None),
+                Memory.expires_at <= now,
+            )
+        )
+        changed = False
+        for memory in result.scalars():
+            memory.status = MemoryStatus.invalidated
+            memory.updated_at = now
+            self._record_version(memory, "invalidated")
+            changed = True
+        if changed:
+            await self.db.flush()
 
     def _rank_memories(self, memories: list[Memory], terms: list[str]) -> list[Memory]:
         return sorted(
@@ -418,13 +521,17 @@ class MemoryService:
     def _to_retrieved_memory(self, memory: Memory, terms: list[str]) -> RetrievedMemory:
         matched_terms = self._matched_terms(memory, terms)
         score = self._score_memory(memory, terms)
+        rank_signals = self._rank_signals(memory, terms)
         if matched_terms:
             reason = (
                 f"命中 {len(matched_terms)} 个关键词，"
-                f"importance={memory.importance}，use_count={memory.use_count}"
+                f"importance={memory.importance}，use_count={memory.use_count}，scope={memory.scope}"
             )
         else:
-            reason = f"无关键词命中，按 importance={memory.importance}，use_count={memory.use_count} 排序"
+            reason = (
+                f"无关键词命中，按 importance={memory.importance}，"
+                f"use_count={memory.use_count}，recency={rank_signals['recency']} 排序"
+            )
         return RetrievedMemory(
             id=memory.id,
             content=memory.content,
@@ -435,11 +542,31 @@ class MemoryService:
             category=memory.category,
             source_kind=memory.source_kind,
             confidence=memory.confidence,
+            conflict_key=memory.conflict_key,
+            rank_signals=rank_signals,
         )
 
     def _score_memory(self, memory: Memory, terms: list[str]) -> int:
+        signals = self._rank_signals(memory, terms)
+        return (
+            signals["term_hits"] * 10
+            + signals["importance"] * 3
+            + signals["use_count"]
+            + signals["confidence"]
+            + signals["scope"]
+            + signals["recency"]
+        )
+
+    def _rank_signals(self, memory: Memory, terms: list[str]) -> dict[str, int]:
         hit_count = len(self._matched_terms(memory, terms))
-        return hit_count * 10 + memory.importance * 3 + min(memory.use_count, 10) + self._recency_bonus(memory)
+        return {
+            "term_hits": hit_count,
+            "importance": memory.importance,
+            "use_count": min(memory.use_count, 10),
+            "confidence": memory.confidence,
+            "scope": self._scope_bonus(memory.scope),
+            "recency": self._recency_bonus(memory),
+        }
 
     def _matched_terms(self, memory: Memory, terms: list[str]) -> list[str]:
         normalized_content = memory.content.lower()
@@ -464,6 +591,20 @@ class MemoryService:
         if updated_at.tzinfo is None:
             updated_at = updated_at.replace(tzinfo=utc_now().tzinfo)
         return updated_at.timestamp()
+
+    def _scope_bonus(self, scope: str) -> int:
+        return {"session": 3, "project": 2, "user": 2, "working": 1}.get(scope, 0)
+
+    async def _memories_by_ids(self, memory_ids: list[str]) -> list[Memory]:
+        if not memory_ids:
+            return []
+        result = await self.db.execute(select(Memory).where(Memory.id.in_(memory_ids)))
+        memories_by_id = {memory.id: memory for memory in result.scalars()}
+        return [memories_by_id[memory_id] for memory_id in memory_ids if memory_id in memories_by_id]
+
+    async def _session_id_for_message(self, message_id: str) -> str | None:
+        result = await self.db.execute(select(Message.session_id).where(Message.id == message_id))
+        return result.scalar_one_or_none()
 
     async def _get_memory(self, memory_id: str) -> Memory:
         result = await self.db.execute(select(Memory).where(Memory.id == memory_id))
@@ -497,8 +638,10 @@ class MemoryService:
 
     def _validate_category(self, category: str) -> str:
         normalized = category.strip()
-        if not normalized:
-            raise InvalidMemoryPayloadError("Memory category must not be empty")
+        allowed = {"preference", "fact", "constraint", "goal", "decision", "todo", "summary_note"}
+        if normalized not in allowed:
+            message = "Memory category must be preference/fact/constraint/goal/decision/todo/summary_note"
+            raise InvalidMemoryPayloadError(message)
         return normalized
 
     def _validate_source_kind(self, source_kind: str) -> str:
@@ -524,3 +667,12 @@ class MemoryService:
 
     def _status_value(self, status: MemoryStatus | str) -> str:
         return getattr(status, "value", status)
+
+    def _is_expired(self, memory: Memory) -> bool:
+        if memory.expires_at is None:
+            return False
+        expires_at = memory.expires_at
+        now = utc_now()
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=now.tzinfo)
+        return expires_at <= now

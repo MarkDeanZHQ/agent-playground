@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy import select
 
-from app.agent.runner import AgentRunner
+from app.agent.runner import AgentRunner, ContextBuilder
 from app.db.models import AgentStep, ToolCall
 from app.db.session import AsyncSessionLocal
 from app.tools.builtin import build_default_registry
@@ -230,3 +230,30 @@ async def test_stream_records_latency_metric_step():
         assert any(event.event == "latency_metric" for event in events)
         assert "time_to_first_token_ms" in latency_step.content
         assert "total_run_duration_ms" in latency_step.content
+
+
+def test_context_builder_reports_budget_decisions_and_sources():
+    builder = ContextBuilder()
+    long_memory = "m" * (builder.DEFAULT_BUDGETS["memories"] + 20)
+    long_user_message = "u" * (builder.DEFAULT_BUDGETS["current_user_message"] + 20)
+
+    context, trace = builder.build(
+        long_user_message,
+        [long_memory],
+        [],
+        recent_messages=[("user", "previous message")],
+        session_summary="active_goal:\n- keep context observable",
+    )
+
+    blocks = {block["name"]: block for block in trace["blocks"]}
+    assert trace["budget_unit"] == "chars"
+    assert trace["total_budget_chars"] == sum(builder.DEFAULT_BUDGETS.values())
+    assert trace["total_original_chars"] > trace["total_final_chars"]
+    assert blocks["current_user_message"]["decision"] == "dropped"
+    assert blocks["current_user_message"]["reason"] == "required_block_exceeded_budget"
+    assert blocks["current_user_message"]["source"] == "current_turn"
+    assert blocks["memories"]["decision"] == "trimmed"
+    assert blocks["memories"]["source"] == "retrieved_memories"
+    assert "memories" in trace["trimmed_blocks"]
+    assert "current_user_message" in trace["dropped_blocks"]
+    assert "recent_messages:" in context

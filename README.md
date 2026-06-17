@@ -23,9 +23,9 @@
 - 受控安全工具：`text_stats`、`note_search`、`json_extract`、`todo_create`、`todo_list`
 - SQLite + SQLAlchemy Async 持久化
 - Alembic 初始迁移与数据库双模式初始化（`create_all` / `alembic`）
-- 分层记忆模型：`scope/category/source_kind/confidence`、保守关键词检索、可解释评分、使用反馈、保守冲突处理、用户可控管理闭环与 `memory_versions` 版本审计记录
+- 分层记忆模型：`scope/category/source_kind/confidence`、`expires_at` 生命周期、session/project 可见性隔离、保守关键词检索、可解释评分、使用反馈、显式冲突决策、替代链路与 `memory_versions` 版本审计记录
 - 结构化会话摘要：`session_summaries.summary_json`、摘要 trace、chat/stream 持久化一致性
-- 预算驱动上下文组装：块级 `context_trace`、裁剪观察、TUI 可视化
+- 预算驱动上下文组装：块级 `context_trace`、总预算统计、裁剪/丢弃原因与来源解释
 - AgentRunner 共享单轮驱动：`run()` / `stream()` 复用同一套 turn cycle、工具执行入口和流式指标收口
 - 真实 Claude / OpenAI / OpenAI-compatible 模型接入
 - pytest 测试
@@ -43,21 +43,21 @@
 | 工具注册与调用 | `app/tools/registry.py`, `app/tools/builtin.py`, `tool_calls` |
 | 短期会话上下文 | `ChatService._recent_messages()`, `ContextBuilder.build()` |
 | 长会话摘要压缩 | `app/services/session_summary.py`, `session_summaries`, `summary_json`, `ContextBuilder.build()` |
-| 长期记忆抽取/检索/注入 | `app/memory/service.py`, `memories`, `memory_versions`；Agent 默认只检索 `active` 记忆，并在注入后更新 `use_count` / `last_used_at`，同时保留 `scope/category/source_kind/confidence` |
+| 长期记忆抽取/检索/注入 | `app/memory/service.py`, `memories`, `memory_versions`；Agent 默认只检索可见的 `active` 记忆，并在注入后更新 `use_count` / `last_used_at`，同时保留 `scope/category/source_kind/confidence`、`rank_signals` 与冲突链路 |
 | 记忆使用闭环 | `tests/test_api.py::test_memory_roundtrip_retrieves_injects_and_uses_saved_memory` |
 | Trace 可观察性 | `agent_steps`, `tool_calls`, `/api/v1/runs`, `/api/v1/runs/{run_id}`, `/api/v1/dashboard/run-stats` |
 | 测试 | `tests/`, `uv run pytest` |
 | Docker | `Dockerfile`, `docker-compose.yml`, `.env.docker.example` |
 
-更完整的概念说明见 [`docs/01-agent-loop.md`](docs/01-agent-loop.md)、[`docs/02-tool-system.md`](docs/02-tool-system.md)、[`docs/03-memory-system.md`](docs/03-memory-system.md)、[`docs/04-trace-observability.md`](docs/04-trace-observability.md) 和 [`docs/08-testing-and-docker.md`](docs/08-testing-and-docker.md)。
+更完整的概念说明见 [`docs/01-agent-loop.md`](docs/01-agent-loop.md)、[`docs/02-tool-system.md`](docs/02-tool-system.md)、[`docs/03-memory-system.md`](docs/03-memory-system.md)、[`docs/04-trace-observability.md`](docs/04-trace-observability.md) 和 [`docs/08-testing-and-docker.md`](docs/08-testing-and-docker.md)。本轮非 TUI、非 embedding 的完成边界见 [`../proposal/17-agent-playground-memory-context-non-tui-completion-proposal.md`](../proposal/17-agent-playground-memory-context-non-tui-completion-proposal.md)。
 
 ## 已知限制和失败 case
 
 - 默认 `FakeModelAdapter` 用于教学演示，不代表真实 LLM 推理能力；它只覆盖工具调用、记忆引用等少量可验收路径。
 - 长期记忆检索当前是轻量关键词检索：保守 term 提取、DB 粗过滤、Python 精排；不支持 embedding、向量数据库、reranker 或复杂语义相关性排序。
-- 记忆管理支持 `active` / `superseded` / `archived` / `deleted`；非 `active` 记忆不会注入 Agent 上下文，`superseded` 是系统历史状态，只读，软删除不会物理删除数据。每条记忆还会暴露 `scope/category/source_kind/confidence` 这组解释字段。
-- 记忆冲突处理采用 `conflict_key` + 明确替换信号的保守 `superseded` 策略；普通相关记忆默认新增，不能识别所有复杂偏好冲突或细粒度事实冲突。
-- 短期上下文保留当前 session 最近有限消息，超长对话会先写入结构化摘要，再继续保留最近窗口原文；摘要只覆盖当前 turn 之前的旧消息，不等于长期记忆。上下文构建会输出块级 `context_trace`，用于解释预算和裁剪。
+- 记忆管理支持 `active` / `superseded` / `invalidated` / `archived` / `deleted`；非 `active` 记忆不会注入 Agent 上下文，`superseded` 与 `invalidated` 是系统历史状态，只读，软删除不会物理删除数据。每条记忆还会暴露 `scope/category/source_kind/confidence/expires_at` 这组解释字段。
+- 记忆冲突处理采用 `conflict_key` + 明确替换信号的保守策略，并显式输出 `no_conflict` / `pending_confirmation` / `supersedes` / `invalidated` 决策；普通相关记忆默认新增，不能识别所有复杂偏好冲突或细粒度事实冲突。
+- 短期上下文保留当前 session 最近有限消息，超长对话会先写入结构化摘要，再继续保留最近窗口原文；摘要只覆盖当前 turn 之前的旧消息，不等于长期记忆。上下文构建会输出块级 `context_trace`，用于解释预算、来源、裁剪和丢弃原因；当前 user message 不会重复进入 recent window。
 - 工具集仅包含安全的教学工具，不提供 shell、浏览器抓取、任意文件读写等高权限工具。
 - OpenAI-compatible 服务的 tool calling 支持度不一致；协议兼容模式只调整参数与流式解析，不再自动禁用 tools。
 - `live=true` 模型健康检查会真实请求模型供应商，可能产生 token 成本或触发供应商限流。

@@ -1,7 +1,9 @@
+from datetime import timedelta
+
 import pytest
 from sqlalchemy import select
 
-from app.db.models import Memory, MemoryStatus, MemoryVersion, Message, MessageRole, Session
+from app.db.models import Memory, MemoryStatus, MemoryVersion, Message, MessageRole, Session, utc_now
 from app.db.session import AsyncSessionLocal
 from app.memory.service import (
     InvalidMemoryOperationError,
@@ -64,12 +66,13 @@ async def test_memory_service_records_superseded_version():
         service = MemoryService(db)
         old_memory = (await service.extract_and_store(first.id, first.content))[0]
 
-        await service.extract_and_store(second.id, second.content)
+        [new_memory] = await service.extract_and_store(second.id, second.content)
 
         result = await db.execute(select(MemoryVersion).where(MemoryVersion.memory_id == old_memory.id))
         operations = [version.operation for version in result.scalars()]
 
     assert old_memory.status == MemoryStatus.superseded
+    assert new_memory.supersedes_memory_id == old_memory.id
     assert operations == ["created", "superseded"]
 
 
@@ -207,8 +210,67 @@ async def test_memory_service_retrieve_matches_scores_and_explains_results():
         assert "命中" in matches[0].reason
         assert matches[0].scope == "project"
         assert matches[0].category == "preference"
+        assert matches[0].rank_signals["term_hits"] > 0
+        assert matches[0].conflict_key == "preference:framework-example"
         assert fastapi.use_count == 1
         assert fastapi.last_used_at is not None
+
+
+@pytest.mark.asyncio
+async def test_memory_service_retrieve_matches_isolates_session_scope():
+    async with AsyncSessionLocal() as db:
+        service = MemoryService(db)
+        first_session = Session()
+        second_session = Session()
+        db.add_all([first_session, second_session])
+        await db.flush()
+        session_memory = await service.create_memory(
+            "我偏好 session-only FastAPI 示例",
+            scope="session",
+            session_id=first_session.id,
+        )
+        project_memory = await service.create_memory("我偏好 project-visible FastAPI 示例", scope="project")
+
+        first_matches = await service.retrieve_matches("FastAPI 示例", limit=10, session_id=first_session.id)
+        second_matches = await service.retrieve_matches("FastAPI 示例", limit=10, session_id=second_session.id)
+        global_matches = await service.retrieve_matches("FastAPI 示例", limit=10)
+
+        assert session_memory.id in {memory.id for memory in first_matches}
+        assert session_memory.id not in {memory.id for memory in second_matches}
+        assert session_memory.id not in {memory.id for memory in global_matches}
+        assert project_memory.id in {memory.id for memory in second_matches}
+        assert project_memory.id in {memory.id for memory in global_matches}
+
+
+@pytest.mark.asyncio
+async def test_memory_conflict_decision_distinguishes_coexist_and_supersedes():
+    async with AsyncSessionLocal() as db:
+        service = MemoryService(db)
+        session = Session()
+        db.add(session)
+        await db.flush()
+        first = await service.create_memory(
+            "我偏好 FastAPI conflict-decision 示例",
+            scope="session",
+            session_id=session.id,
+        )
+
+        coexist = await service.resolve_conflict(
+            "我偏好 Django conflict-decision 示例",
+            "请记住：我偏好 Django",
+            session.id,
+        )
+        supersedes = await service.resolve_conflict(
+            "我偏好 Django conflict-decision 示例",
+            "请记住：我偏好以后用 Django",
+            session.id,
+        )
+
+        assert coexist.resolution == "pending_confirmation"
+        assert coexist.candidate_ids == [first.id]
+        assert coexist.superseded_ids == []
+        assert supersedes.resolution == "supersedes"
+        assert supersedes.superseded_ids == [first.id]
 
 
 @pytest.mark.asyncio
@@ -225,6 +287,27 @@ async def test_mark_used_ignores_duplicate_and_non_active_memories():
         assert active.last_used_at is not None
         assert archived.use_count == 0
         assert archived.last_used_at is None
+
+
+@pytest.mark.asyncio
+async def test_memory_service_invalidates_expired_memories_before_retrieval():
+    async with AsyncSessionLocal() as db:
+        service = MemoryService(db)
+        expired = await service.create_memory(
+            "我偏好 expired FastAPI 示例",
+            expires_at=utc_now() - timedelta(seconds=1),
+        )
+        fresh = await service.create_memory(
+            "我偏好 fresh FastAPI 示例",
+            expires_at=utc_now() + timedelta(days=1),
+        )
+
+        matches = await service.retrieve_matches("FastAPI 示例", limit=10)
+
+        assert expired.id not in {memory.id for memory in matches}
+        assert fresh.id in {memory.id for memory in matches}
+        assert expired.status == MemoryStatus.invalidated
+        assert await _version_operations(db, expired.id) == ["created", "invalidated"]
 
 
 @pytest.mark.asyncio
@@ -261,10 +344,11 @@ async def test_conflict_key_supersedes_only_with_replacement_marker():
         service = MemoryService(db)
         old_memory = (await service.extract_and_store(first.id, first.content))[0]
 
-        await service.extract_and_store(second.id, second.content)
+        [new_memory] = await service.extract_and_store(second.id, second.content)
 
         assert has_replacement_marker(second.content) is True
         assert old_memory.status == MemoryStatus.superseded
+        assert new_memory.supersedes_memory_id == old_memory.id
         assert await _version_operations(db, old_memory.id) == ["created", "superseded"]
 
 

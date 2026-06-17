@@ -82,6 +82,7 @@ class ContextBuilder:
         "memories": 1200,
         "tool_results": 1000,
     }
+    TOTAL_BUDGET = sum(DEFAULT_BUDGETS.values())
 
     def build(
         self,
@@ -92,22 +93,37 @@ class ContextBuilder:
         session_summary: str | None = None,
     ) -> tuple[str, dict[str, object]]:
         blocks = [
-            self._block("current_user_message", f"current_user_message: {user_message}", priority=100, trim=False),
-            self._block("session_summary", self._section("session_summary", self._lines(session_summary)), priority=90),
+            self._block(
+                "current_user_message",
+                f"current_user_message: {user_message}",
+                priority=100,
+                trim=False,
+                source="current_turn",
+            ),
+            self._block(
+                "session_summary",
+                self._section("session_summary", self._lines(session_summary)),
+                priority=90,
+                source="session_summary",
+            ),
             self._block(
                 "recent_messages",
                 self._section("recent_messages", [f"{role}: {content}" for role, content in (recent_messages or [])]),
                 priority=70,
+                source="raw_messages",
             ),
-            self._block("memories", self._section("memories", memories), priority=60),
+            self._block("memories", self._section("memories", memories), priority=60, source="retrieved_memories"),
             self._block(
                 "tool_results",
                 self._section("tool_results", [result.content for result in tool_results]),
                 priority=40,
+                source="tool_artifacts",
             ),
         ]
         parts: list[str] = []
         trace_blocks: list[dict[str, object]] = []
+        total_original_chars = 0
+        total_final_chars = 0
         for block in blocks:
             raw_content = str(block["content"])
             if not raw_content:
@@ -115,24 +131,46 @@ class ContextBuilder:
             budget = self.DEFAULT_BUDGETS[str(block["name"])]
             final_content = raw_content
             dropped = False
+            trimmed = False
+            decision = "included"
+            reason = "within_budget"
             if len(raw_content) > budget and bool(block["trim"]):
                 final_content = raw_content[:budget].rstrip()
+                trimmed = True
+                decision = "trimmed"
+                reason = "block_exceeded_budget"
             elif len(raw_content) > budget:
                 dropped = True
                 final_content = ""
+                decision = "dropped"
+                reason = "required_block_exceeded_budget"
             if final_content:
                 parts.append(final_content)
+            total_original_chars += len(raw_content)
+            total_final_chars += len(final_content)
             trace_blocks.append(
                 {
                     "name": block["name"],
+                    "source": block["source"],
                     "priority": block["priority"],
                     "budget_chars": budget,
                     "original_chars": len(raw_content),
                     "final_chars": len(final_content),
                     "dropped": dropped,
+                    "trimmed": trimmed,
+                    "decision": decision,
+                    "reason": reason,
                 }
             )
-        return "\n\n".join(parts), {"blocks": trace_blocks}
+        return "\n\n".join(parts), {
+            "budget_unit": "chars",
+            "total_budget_chars": self.TOTAL_BUDGET,
+            "total_original_chars": total_original_chars,
+            "total_final_chars": total_final_chars,
+            "dropped_blocks": [block["name"] for block in trace_blocks if block["dropped"]],
+            "trimmed_blocks": [block["name"] for block in trace_blocks if block["trimmed"]],
+            "blocks": trace_blocks,
+        }
 
     def _section(self, title: str, lines: list[str]) -> str:
         if not lines:
@@ -142,8 +180,8 @@ class ContextBuilder:
     def _lines(self, text: str | None) -> list[str]:
         return [line for line in (text or "").splitlines() if line.strip()]
 
-    def _block(self, name: str, content: str, priority: int, trim: bool = True) -> dict[str, object]:
-        return {"name": name, "content": content, "priority": priority, "trim": trim}
+    def _block(self, name: str, content: str, priority: int, source: str, trim: bool = True) -> dict[str, object]:
+        return {"name": name, "content": content, "priority": priority, "source": source, "trim": trim}
 
 
 class TraceRecorder:
@@ -268,6 +306,8 @@ class AgentRunner:
                         "category": memory.category,
                         "source_kind": memory.source_kind,
                         "confidence": memory.confidence,
+                        "conflict_key": memory.conflict_key,
+                        "rank_signals": memory.rank_signals,
                     }
                 )
             else:
