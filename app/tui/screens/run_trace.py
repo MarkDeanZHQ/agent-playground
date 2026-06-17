@@ -155,6 +155,18 @@ class RunTraceScreen(Screen[None]):
                 label = "Claude " + label
             if step["kind"].startswith("session_summary_"):
                 label = "Summary " + label
+            if step["kind"] == "memory_policy_decision":
+                label = "Memory Decision " + self._summary_line(self._memory_decision_summary(payload))
+            if step["kind"] == "memory_saved":
+                label = "Memory Saved " + self._summary_line(self._memory_saved_summary(payload))
+            if step["kind"] == "memory_superseded":
+                label = "Memory Superseded " + self._summary_line(self._memory_superseded_summary(payload))
+            if step["kind"] == "memory_skipped":
+                label = "Memory Skipped " + self._summary_line(self._memory_skipped_summary(payload))
+            if step["kind"] == "memory_retrieved":
+                label = "Memory Retrieval " + self._summary_line(self._memory_retrieval_summary(payload))
+            if step["kind"] == "context_built":
+                label = "Context Budget " + self._summary_line(self._context_trace_summary(payload))
             await steps_list.append(ListItem(Label(label)))
         for tool_call in self.tool_calls:
             status_text = "ERROR" if tool_call["is_error"] else "OK"
@@ -195,6 +207,54 @@ class RunTraceScreen(Screen[None]):
                             }
                         )
                     )
+                elif step["kind"] == "memory_policy_decision":
+                    detail.write(
+                        self._structured_detail(
+                            "Memory Decision",
+                            self._memory_decision_summary(payload),
+                            payload,
+                        )
+                    )
+                elif step["kind"] == "memory_saved":
+                    detail.write(
+                        self._structured_detail(
+                            "Memory Saved",
+                            self._memory_saved_summary(payload),
+                            payload,
+                        )
+                    )
+                elif step["kind"] == "memory_superseded":
+                    detail.write(
+                        self._structured_detail(
+                            "Memory Superseded",
+                            self._memory_superseded_summary(payload),
+                            payload,
+                        )
+                    )
+                elif step["kind"] == "memory_skipped":
+                    detail.write(
+                        self._structured_detail(
+                            "Memory Skipped",
+                            self._memory_skipped_summary(payload),
+                            payload,
+                        )
+                    )
+                elif step["kind"] == "memory_retrieved":
+                    detail.write(
+                        self._structured_detail(
+                            "Memory Retrieval",
+                            self._memory_retrieval_summary(payload),
+                            payload,
+                        )
+                    )
+                elif step["kind"] == "context_built":
+                    detail.write(
+                        self._structured_detail(
+                            "Context Budget",
+                            self._context_trace_summary(payload),
+                            payload,
+                        )
+                    )
                 else:
                     detail.write(pretty_json(step))
                 status.update("已显示选中 Step。")
@@ -219,3 +279,101 @@ class RunTraceScreen(Screen[None]):
         except json.JSONDecodeError:
             return None
         return payload if isinstance(payload, dict) else None
+
+    def _summary_line(self, lines: list[str]) -> str:
+        return lines[0] if lines else ""
+
+    def _structured_detail(self, title: str, lines: list[str], payload: dict | None) -> str:
+        parts = [title]
+        parts.extend(lines)
+        if payload:
+            parts.append("")
+            parts.append(pretty_json(payload))
+        return "\n".join(parts)
+
+    def _memory_decision_summary(self, payload: dict | None) -> list[str]:
+        if not payload:
+            return []
+        conflict = payload.get("conflict_decision") if isinstance(payload.get("conflict_decision"), dict) else {}
+        lines = [
+            f"should_store={payload.get('should_store')}",
+            f"resolution={conflict.get('resolution')}",
+            f"outcome={conflict.get('outcome')}",
+            f"conflict_key={conflict.get('conflict_key')}",
+            f"candidate_ids={conflict.get('candidate_ids', [])}",
+            f"superseded_ids={conflict.get('superseded_ids', [])}",
+            f"saved_memory_id={payload.get('saved_memory_id')}",
+            f"supersedes_memory_id={payload.get('supersedes_memory_id')}",
+            f"reason={conflict.get('reason')}",
+        ]
+        return [line for line in lines if not line.endswith("=None") and not line.endswith("=[]")]
+
+    def _memory_saved_summary(self, payload: dict | None) -> list[str]:
+        if not payload:
+            return []
+        lines = [
+            f"memory_id={payload.get('memory_id')}",
+            f"conflict_resolution={payload.get('conflict_resolution')}",
+            f"conflict_outcome={payload.get('conflict_outcome')}",
+            f"supersedes_memory_id={payload.get('supersedes_memory_id')}",
+            f"reason={payload.get('reason')}",
+        ]
+        return [line for line in lines if not line.endswith("=None")]
+
+    def _memory_superseded_summary(self, payload: dict | None) -> list[str]:
+        if not payload:
+            return []
+        lines = [
+            f"memory_id={payload.get('memory_id')}",
+            f"superseded_memory_id={payload.get('superseded_memory_id')}",
+            f"resolution={payload.get('resolution')}",
+            f"outcome={payload.get('outcome')}",
+            f"reason={payload.get('reason')}",
+        ]
+        return [line for line in lines if not line.endswith("=None")]
+
+    def _memory_skipped_summary(self, payload: dict | None) -> list[str]:
+        if not payload:
+            return []
+        lines = [f"reason={payload.get('reason')}"]
+        return [line for line in lines if not line.endswith("=None")]
+
+    def _memory_retrieval_summary(self, payload: dict | None) -> list[str]:
+        if not payload:
+            return []
+        matches = payload.get("matches") if isinstance(payload.get("matches"), list) else []
+        lines = [
+            f"query={payload.get('query')}",
+            f"terms={payload.get('terms')}",
+            f"count={len(matches)}",
+        ]
+        for match in matches[:3]:
+            if not isinstance(match, dict):
+                continue
+            lines.append(
+                f"- {match.get('memory_id')} score={match.get('score')} "
+                f"scope={match.get('scope')} conflict_key={match.get('conflict_key')}"
+            )
+        return [line for line in lines if not line.endswith("=None")]
+
+    def _context_trace_summary(self, payload: dict | None) -> list[str]:
+        if not payload:
+            return []
+        context_trace = payload.get("context_trace") if isinstance(payload.get("context_trace"), dict) else {}
+        blocks = context_trace.get("blocks") if isinstance(context_trace.get("blocks"), list) else []
+        lines = [
+            f"budget_unit={context_trace.get('budget_unit')}",
+            f"total_budget_chars={context_trace.get('total_budget_chars')}",
+            f"total_original_chars={context_trace.get('total_original_chars')}",
+            f"total_final_chars={context_trace.get('total_final_chars')}",
+            f"trimmed_blocks={context_trace.get('trimmed_blocks')}",
+            f"dropped_blocks={context_trace.get('dropped_blocks')}",
+        ]
+        for block in blocks[:4]:
+            if not isinstance(block, dict):
+                continue
+            lines.append(
+                f"- {block.get('name')} source={block.get('source')} "
+                f"final={block.get('final_chars')} decision={block.get('decision')}"
+            )
+        return [line for line in lines if not line.endswith("=None")]

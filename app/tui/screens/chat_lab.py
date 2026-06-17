@@ -88,6 +88,8 @@ class ChatLabScreen(Screen[None]):
             "started_at": time.perf_counter(),
             "first_token_at": None,
             "completed_at": None,
+            "memory_summary": None,
+            "context_summary": None,
         }
         status.update("正在连接 API 并发送消息...")
         try:
@@ -127,6 +129,7 @@ class ChatLabScreen(Screen[None]):
             state["final_text"] = str(state["final_text"]) + str(event.data.get("text", ""))
         if event.event == "memory_used":
             state["used_memories"] = [str(item) for item in event.data.get("memory_ids", [])]
+            state["memory_summary"] = self._memory_used_summary(event.data)
         if event.event == "tool_result":
             used_tools = state["used_tools"]
             assert isinstance(used_tools, list)
@@ -137,6 +140,11 @@ class ChatLabScreen(Screen[None]):
                 state["error_info"] = event.data.get("error_info")
         if event.event == "token_usage":
             state["usage_payload"] = event.data
+        if event.event == "context_built":
+            state["context_summary"] = self._context_built_summary(event.data)
+        if event.event == "run_finished":
+            status = self.query_one("#chat-status", Static)
+            status.update("正在写入 Trace 和记忆...")
 
     def _write_observable_event(
         self,
@@ -153,14 +161,13 @@ class ChatLabScreen(Screen[None]):
             tool_name = event.data.get("name") or event.data.get("tool_name") or "unknown"
             status.update(f"正在调用工具：{tool_name}")
         if event.event == "memory_used":
-            conversation.write(f"Memory used: {pretty_json(event.data.get('memories', []))}")
+            conversation.write(self._memory_used_summary(event.data))
         if event.event == "session_summary_used":
             covered = event.data.get("covered_message_count")
             chars = event.data.get("summary_chars")
             conversation.write(f"Session summary used: covered={covered} summary_chars={chars}")
         if event.event == "context_built":
-            trace = event.data.get("context_trace", {})
-            conversation.write(f"Context blocks: {pretty_json(trace)}")
+            conversation.write(self._context_built_summary(event.data))
         if event.event == "tool_result":
             conversation.write(f"Tool result: {event.data.get('name')} error={event.data.get('is_error')}")
         if event.event == "latency_metric":
@@ -182,6 +189,10 @@ class ChatLabScreen(Screen[None]):
             conversation.write(f"Used tools: {', '.join(used_tools)}")
         if isinstance(used_memories, list) and used_memories:
             conversation.write(f"Used memories: {', '.join(used_memories)}（按 F5 到 Memory Lab 查看详情）")
+        if isinstance(state.get("memory_summary"), str):
+            conversation.write(f"Memory: {state['memory_summary']}")
+        if isinstance(state.get("context_summary"), str):
+            conversation.write(f"Context: {state['context_summary']}")
         first_token_at = state.get("first_token_at")
         started_at = state.get("started_at")
         completed_at = state.get("completed_at")
@@ -227,3 +238,31 @@ class ChatLabScreen(Screen[None]):
         if isinstance(value, int | float):
             return f"{value / 1000:.2f}s"
         return "n/a"
+
+    def _memory_used_summary(self, payload: dict[str, object]) -> str:
+        memories = payload.get("matches") if isinstance(payload.get("matches"), list) else []
+        lines = [f"Memory used: {len(memories)}"]
+        for match in memories[:3]:
+            if not isinstance(match, dict):
+                continue
+            lines.append(
+                f"- {match.get('memory_id')} score={match.get('score')} "
+                f"scope={match.get('scope')} conflict_key={match.get('conflict_key')}"
+            )
+        return "\n".join(lines)
+
+    def _context_built_summary(self, payload: dict[str, object]) -> str:
+        context_trace = payload.get("context_trace") if isinstance(payload.get("context_trace"), dict) else {}
+        blocks = context_trace.get("blocks") if isinstance(context_trace.get("blocks"), list) else []
+        lines = [
+            f"Context: final={context_trace.get('total_final_chars')} chars, "
+            f"trimmed={context_trace.get('trimmed_blocks')}, dropped={context_trace.get('dropped_blocks')}",
+        ]
+        for block in blocks[:3]:
+            if not isinstance(block, dict):
+                continue
+            lines.append(
+                f"- {block.get('name')} source={block.get('source')} "
+                f"final={block.get('final_chars')} decision={block.get('decision')}"
+            )
+        return "\n".join(lines)

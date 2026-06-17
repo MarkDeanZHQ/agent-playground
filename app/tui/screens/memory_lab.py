@@ -227,8 +227,7 @@ class MemoryLabScreen(Screen[None]):
     def _show_memory(self, memory: dict[str, Any]) -> None:
         detail = self.query_one("#memory-detail", CopyableText)
         detail.clear()
-        detail.write("排序：命中质量优先，其次 importance、使用次数、更新时间。")
-        detail.write("结构：scope/category/source_kind/confidence。")
+        detail.write(self._memory_summary(memory))
         detail.write(pretty_json(memory))
         self.query_one("#memory-editor", TextArea).load_text(memory["content"])
         self._set_status("已显示选中记忆详情。")
@@ -262,3 +261,53 @@ class MemoryLabScreen(Screen[None]):
             else:
                 parts.append(part)
         return " ".join(parts) or None, status
+
+    def _memory_summary(self, memory: dict[str, Any]) -> str:
+        lines = ["Identity", f"- id={memory.get('id')}", f"- status={memory.get('status')}"]
+        lines.append(f"- scope={memory.get('scope')}")
+        if memory.get("session_id"):
+            lines.append(f"- session_id={memory.get('session_id')}")
+        lines.append(f"- category={memory.get('category')}")
+        lines.append(f"- source_kind={memory.get('source_kind')}")
+        lines.append(f"- confidence={memory.get('confidence')}")
+        if memory.get("sensitivity") is not None:
+            lines.append(f"- sensitivity={memory.get('sensitivity')}")
+        lines.append("")
+        lines.append("Lifecycle")
+        lines.append(f"- created_at={memory.get('created_at')}")
+        lines.append(f"- updated_at={memory.get('updated_at')}")
+        if memory.get("expires_at"):
+            lines.append(f"- expires_at={memory.get('expires_at')}")
+        lines.append(f"- use_count={memory.get('use_count', 0)}")
+        if memory.get("last_used_at"):
+            lines.append(f"- last_used_at={memory.get('last_used_at')}")
+        if memory.get("conflict_key"):
+            lines.append(f"- conflict_key={memory.get('conflict_key')}")
+        if memory.get("supersedes_memory_id"):
+            lines.append(f"- supersedes_memory_id={memory.get('supersedes_memory_id')}")
+        lines.append("")
+        lines.append("Versions")
+        versions = memory.get("versions") if isinstance(memory.get("versions"), list) else []
+        if versions:
+            for version in versions[:3]:
+                if not isinstance(version, dict):
+                    continue
+                lines.append(
+                    f"- {version.get('operation')} {version.get('created_at')} "
+                    f"{short_text(str(version.get('content', '')), 48)}"
+                )
+        else:
+            lines.append("- none")
+        if memory.get("status") == "superseded":
+            lines.append("")
+            lines.append("历史记忆，不会注入上下文。")
+        if memory.get("status") == "invalidated":
+            lines.append("")
+            lines.append("过期失效，不会注入上下文。")
+        if memory.get("scope") == "session":
+            lines.append("")
+            lines.append("仅当前 session 可见。")
+        if memory.get("scope") in {"project", "user"}:
+            lines.append("")
+            lines.append("跨 session 可见。")
+        return "\n".join(lines)

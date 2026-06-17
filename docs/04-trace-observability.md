@@ -54,6 +54,13 @@ curl http://127.0.0.1:8000/api/v1/runs/<run_id>
 3. 左侧选择 run。
 4. 观察步骤列表和完整 JSON。
 
+Run Trace 现在不会只把原始 JSON 糊你脸上。几个关键 step 会先给结构化摘要，再保留原始 payload：
+
+- `memory_policy_decision`：先看 `should_store`、`resolution`、`outcome`、`conflict_key`、候选 id、替代链路和原因；
+- `memory_saved` / `memory_superseded` / `memory_skipped`：先看新记忆是否并存、是否替代旧记忆、为什么跳过；
+- `memory_retrieved`：先看 `query`、`terms`、命中数，再看每条命中的 `score`、`scope`、`conflict_key`；
+- `context_built`：先看 `budget_unit`、总预算、最终长度、哪些块被裁剪或丢弃，再看 block 级 `source/decision/reason`。
+
 `memory_retrieved` step 现在会记录检索解释：`terms` 是本轮保守提取的关键词，`matches` 中每条记忆包含 `memory_id`、`score`、`matched_terms`、`reason`、`conflict_key` 和 `rank_signals`。这能说明记忆为什么被注入上下文，也明确当前仍是轻量关键词检索，不是 embedding RAG。`session` 级记忆只会在同一个 session 内被召回，`project` / `user` 级记忆可跨 session 召回。
 
 `memory_policy_decision` step 会记录自动抽取时的 `conflict_decision`。它用于区分 `no_conflict`、`pending_confirmation`、`supersedes` 和 `invalidated`；其中 `pending_confirmation` 的执行结果会通过 `outcome` / `conflict_outcome` 体现为 `coexists`。当出现替代时，`memory_saved` 会带上 `supersedes_memory_id`，`memory_superseded` 会记录被替代旧记忆。过期记忆会被标记为 `invalidated`，不再参与 `memory_retrieved`。

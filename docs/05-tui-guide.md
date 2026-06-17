@@ -54,10 +54,10 @@ uv run python -m app.tui.main
 ## 界面导览
 
 - **Dashboard｜总览**：显示 API、模型、工具、记忆与最近 Run 状态。页面顶部提示 `r` 刷新和 `l` 真实模型检查；`l` 会请求真实模型供应商，可能产生 token 成本或触发限流。
-- **Chat Lab｜对话实验**：左侧 Conversation 展示用户与 Agent 的可读对话；右侧 Live Trace 展示模型请求、工具调用、记忆、摘要和延迟事件。页面顶部提示 `Enter` 发送、`Esc/Ctrl+C` 取消、`t` 查看最近 Trace。`session_summary_used` 会在会话摘要参与上下文时显示。Loading / Done 写入页面状态栏，不刷屏污染对话日志。
-- **Run Trace｜执行轨迹**：Runs、Steps、Detail 三栏用于复盘一次 Agent 执行中的 step、summary、tool call 与最终结果。页面顶部提示方向键选择、`Enter` 查看详情、`r` 刷新。没有 runs 时会提示去 Chat Lab 产生一条记录。
+- **Chat Lab｜对话实验**：左侧 Conversation 展示用户与 Agent 的可读对话；右侧 Live Trace 展示模型请求、工具调用、记忆、摘要和延迟事件。页面顶部提示 `Enter` 发送、`Esc/Ctrl+C` 取消、`t` 查看最近 Trace。`session_summary_used` 会在会话摘要参与上下文时显示。现在会额外输出本轮短摘要，例如 `Memory used: 2`、命中的 `score/scope`，以及 `Context: final=1234 chars, trimmed=...`，避免每次都去 Run Trace 啃大段 JSON。Loading / Done 写入页面状态栏，不刷屏污染对话日志。
+- **Run Trace｜执行轨迹**：Runs、Steps、Detail 三栏用于复盘一次 Agent 执行中的 step、summary、tool call 与最终结果。页面顶部提示方向键选择、`Enter` 查看详情、`r` 刷新。没有 runs 时会提示去 Chat Lab 产生一条记录。现在 `memory_policy_decision`、`memory_saved`、`memory_superseded`、`memory_skipped`、`memory_retrieved`、`context_built` 都会先显示学习摘要，再保留原始 JSON，便于同时看结论和底层 payload。
 - **Tools Lab｜工具实验**：Tools、Learning Panel、Invoke、Result、History 五块区域用于查看工具摘要、参数表、学习点、原始 schema、最近手动调用历史，并编辑 JSON 参数调用工具。页面顶部提示方向键选择、`Ctrl+Enter/i` 调用、`e` 切换示例、`s` 送到 Chat、`t` 最近 Trace、`r` 刷新。优先使用工具定义里的 `examples` 填充参数，没有 examples 时才回退 schema 自动样例。
-- **Memory Lab｜记忆实验**：Memories、Detail 与底部 Editor 用于检索长期记忆、查看状态、来源、`use_count`、`last_used_at`、`conflict_key` 和版本变化，并支持手动新增、编辑、归档、软删除和恢复。页面顶部提示 `Enter` 搜索、`Ctrl+N` 新增、`Ctrl+S` 保存、`Ctrl+D` 删除。列表会显示使用次数与冲突分组，Detail 会提示当前排序规则：命中质量优先，其次 importance、使用次数、更新时间。没有记忆时会提示通过 Editor 或 Chat Lab 写入示例记忆。
+- **Memory Lab｜记忆实验**：Memories、Detail 与底部 Editor 用于检索长期记忆、查看状态、来源、`use_count`、`last_used_at`、`conflict_key` 和版本变化，并支持手动新增、编辑、归档、软删除和恢复。页面顶部提示 `Enter` 搜索、`Ctrl+N` 新增、`Ctrl+S` 保存、`Ctrl+D` 删除。列表会显示使用次数与冲突分组，Detail 现在会把 `scope/session_id/expires_at/supersedes_memory_id`、版本摘要、是否跨 session 可见、是否已失效先讲清楚，再附原始 JSON。没有记忆时会提示通过 Editor 或 Chat Lab 写入示例记忆。
 - **Validation Lab｜学习验收**：Checks 与 Output 用于运行学习闭环检查台。页面顶部提示 `c` 核心闭环、`r` 运行选中项、`a` 运行全部。分为 `Core Path`、`Environment`、`Developer Quality` 三组，建议先按 `c` 跑核心闭环，再按需看环境和质量自检。状态含义为 `? 未运行`、`… 运行中`、`✓ 通过`、`✗ 失败`、`○ 跳过`。
 
 ## 空态与错误态

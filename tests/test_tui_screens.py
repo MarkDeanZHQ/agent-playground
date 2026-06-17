@@ -227,7 +227,6 @@ def test_usage_and_error_formatters_render_observable_summary():
     assert "rate_limited" in error_message
     assert "retryable=true" in error_message
 
-
 def test_tool_history_entry_is_compact_and_observable():
     entry = format_history_entry(
         {
@@ -260,6 +259,150 @@ def test_memory_lab_parse_query_supports_management_statuses():
 
     assert screen._parse_query("FastAPI status:archived") == ("FastAPI", "archived")
     assert screen._parse_query("status:deleted") == (None, "deleted")
+
+
+def test_run_trace_summaries_cover_memory_decision_retrieval_and_context_budget():
+    screen = RunTraceScreen(AgentPlaygroundClient("http://test"))
+
+    decision = screen._memory_decision_summary(
+        {
+            "should_store": True,
+            "saved_memory_id": "mem-new",
+            "supersedes_memory_id": "mem-old",
+            "conflict_decision": {
+                "resolution": "supersedes",
+                "outcome": "supersedes",
+                "conflict_key": "preference:framework-example",
+                "candidate_ids": ["mem-old"],
+                "superseded_ids": ["mem-old"],
+                "reason": "explicit replacement",
+            },
+        }
+    )
+    retrieval = screen._memory_retrieval_summary(
+        {
+            "query": "请记住 FastAPI",
+            "terms": ["fastapi"],
+            "matches": [
+                {
+                    "memory_id": "mem-1",
+                    "score": 7,
+                    "scope": "project",
+                    "conflict_key": "preference:framework-example",
+                }
+            ],
+        }
+    )
+    context = screen._context_trace_summary(
+        {
+            "context_trace": {
+                "budget_unit": "chars",
+                "total_budget_chars": 2000,
+                "total_original_chars": 2600,
+                "total_final_chars": 1800,
+                "trimmed_blocks": ["memories"],
+                "dropped_blocks": [],
+                "blocks": [
+                    {
+                        "name": "memories",
+                        "source": "memory_retrieval",
+                        "final_chars": 320,
+                        "decision": "trimmed",
+                    }
+                ],
+            }
+        }
+    )
+
+    assert "resolution=supersedes" in decision
+    assert "outcome=supersedes" in decision
+    assert "supersedes_memory_id=mem-old" in decision
+    assert "query=请记住 FastAPI" in retrieval
+    assert "count=1" in retrieval
+    assert any("mem-1 score=7 scope=project" in line for line in retrieval)
+    assert "budget_unit=chars" in context
+    assert "total_final_chars=1800" in context
+    assert any("memories source=memory_retrieval final=320 decision=trimmed" in line for line in context)
+
+
+def test_memory_lab_summary_explains_scope_lifecycle_and_versions():
+    screen = MemoryLabScreen(AgentPlaygroundClient("http://test"))
+
+    summary = screen._memory_summary(
+        {
+            "id": "mem-1",
+            "status": "superseded",
+            "scope": "session",
+            "session_id": "ses-1",
+            "category": "preference",
+            "source_kind": "auto",
+            "confidence": 3,
+            "created_at": "2026-06-18T07:00:00Z",
+            "updated_at": "2026-06-18T07:05:00Z",
+            "expires_at": "2026-06-19T07:00:00Z",
+            "use_count": 2,
+            "last_used_at": "2026-06-18T07:06:00Z",
+            "conflict_key": "preference:framework-example",
+            "supersedes_memory_id": "mem-0",
+            "versions": [
+                {
+                    "operation": "superseded",
+                    "created_at": "2026-06-18T07:05:00Z",
+                    "content": "我偏好 FastAPI 示例",
+                }
+            ],
+        }
+    )
+
+    assert "Identity" in summary
+    assert "- session_id=ses-1" in summary
+    assert "Lifecycle" in summary
+    assert "- expires_at=2026-06-19T07:00:00Z" in summary
+    assert "- use_count=2" in summary
+    assert "- supersedes_memory_id=mem-0" in summary
+    assert "Versions" in summary
+    assert "历史记忆，不会注入上下文。" in summary
+    assert "仅当前 session 可见。" in summary
+
+
+def test_chat_lab_summaries_stay_compact_and_learning_oriented():
+    screen = ChatLabScreen(AgentPlaygroundClient("http://test"))
+
+    memory_summary = screen._memory_used_summary(
+        {
+            "matches": [
+                {
+                    "memory_id": "mem-1",
+                    "score": 8,
+                    "scope": "project",
+                    "conflict_key": "preference:framework-example",
+                }
+            ]
+        }
+    )
+    context_summary = screen._context_built_summary(
+        {
+            "context_trace": {
+                "total_final_chars": 1234,
+                "trimmed_blocks": ["memories"],
+                "dropped_blocks": [],
+                "blocks": [
+                    {
+                        "name": "current_user_message",
+                        "source": "user_message",
+                        "final_chars": 24,
+                        "decision": "kept",
+                    }
+                ],
+            }
+        }
+    )
+
+    assert "Memory used: 1" in memory_summary
+    assert "mem-1 score=8 scope=project" in memory_summary
+    assert "Context: final=1234 chars" in context_summary
+    assert "trimmed=['memories']" in context_summary
+    assert "current_user_message source=user_message final=24 decision=kept" in context_summary
 
 
 def test_validation_lab_uses_explicit_tool_prompts_and_longer_chat_timeout():
