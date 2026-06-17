@@ -79,8 +79,20 @@ class AgentPlaygroundClient:
         content: str,
         importance: int = 2,
         memory_type: str = "preference",
+        scope: str = "project",
+        category: str = "preference",
+        source_kind: str = "manual",
+        confidence: int = 3,
     ) -> dict[str, Any]:
-        payload = {"content": content, "importance": importance, "memory_type": memory_type}
+        payload = {
+            "content": content,
+            "importance": importance,
+            "memory_type": memory_type,
+            "scope": scope,
+            "category": category,
+            "source_kind": source_kind,
+            "confidence": confidence,
+        }
         async with httpx.AsyncClient(base_url=self.base_url) as client:
             response = await client.post("/api/v1/memories", json=payload)
             response.raise_for_status()
@@ -92,10 +104,22 @@ class AgentPlaygroundClient:
         content: str | None = None,
         importance: int | None = None,
         memory_type: str | None = None,
+        scope: str | None = None,
+        category: str | None = None,
+        source_kind: str | None = None,
+        confidence: int | None = None,
     ) -> dict[str, Any]:
         payload = {
             key: value
-            for key, value in {"content": content, "importance": importance, "memory_type": memory_type}.items()
+            for key, value in {
+                "content": content,
+                "importance": importance,
+                "memory_type": memory_type,
+                "scope": scope,
+                "category": category,
+                "source_kind": source_kind,
+                "confidence": confidence,
+            }.items()
             if value is not None
         }
         async with httpx.AsyncClient(base_url=self.base_url) as client:

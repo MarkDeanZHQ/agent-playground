@@ -54,6 +54,14 @@ def _memory_response(memory: Memory) -> MemoryResponse:
         id=memory.id,
         content=memory.content,
         memory_type=memory.memory_type,
+        scope=memory.scope,
+        category=memory.category,
+        source_kind=memory.source_kind,
+        confidence=memory.confidence,
+        session_id=memory.session_id,
+        owner_id=memory.owner_id,
+        sensitivity=memory.sensitivity,
+        supersedes_memory_id=memory.supersedes_memory_id,
         importance=memory.importance,
         status=_memory_status_value(memory.status),
         source_message_id=memory.source_message_id,
@@ -294,7 +302,13 @@ async def list_runs(
     if status is not None:
         query = query.where(AgentRun.status == status)
     if tool_name:
-        query = query.where(exists(select(ToolCall.id).where(and_(ToolCall.run_id == AgentRun.id, ToolCall.name == tool_name))))
+        query = query.where(
+            exists(
+                select(ToolCall.id).where(
+                    and_(ToolCall.run_id == AgentRun.id, ToolCall.name == tool_name),
+                )
+            )
+        )
     if created_from is not None:
         query = query.where(AgentRun.created_at >= created_from)
     if created_to is not None:
@@ -416,6 +430,13 @@ async def create_memory(
             content=payload.content,
             importance=payload.importance,
             memory_type=payload.memory_type,
+            scope=payload.scope,
+            category=payload.category,
+            source_kind=payload.source_kind,
+            confidence=payload.confidence,
+            session_id=payload.session_id,
+            owner_id=payload.owner_id,
+            sensitivity=payload.sensitivity,
         )
         return await _commit_memory_response(db, memory)
     except (MemoryNotFoundError, InvalidMemoryOperationError, InvalidMemoryPayloadError) as exc:
@@ -436,6 +457,13 @@ async def update_memory(
             content=payload.content,
             importance=payload.importance,
             memory_type=payload.memory_type,
+            scope=payload.scope,
+            category=payload.category,
+            source_kind=payload.source_kind,
+            confidence=payload.confidence,
+            session_id=payload.session_id,
+            owner_id=payload.owner_id,
+            sensitivity=payload.sensitivity,
         )
         return await _commit_memory_response(db, memory)
     except (MemoryNotFoundError, InvalidMemoryOperationError, InvalidMemoryPayloadError) as exc:

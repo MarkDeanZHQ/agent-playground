@@ -82,9 +82,21 @@ async def _version_operations(db, memory_id: str) -> list[str]:
 async def test_memory_service_create_update_archive_delete_restore_flow():
     async with AsyncSessionLocal() as db:
         service = MemoryService(db)
-        memory = await service.create_memory("  手动记忆：偏好 FastAPI  ", importance=3, memory_type="preference")
+        memory = await service.create_memory(
+            "  手动记忆：偏好 FastAPI  ",
+            importance=3,
+            memory_type="preference",
+            scope="project",
+            category="preference",
+            source_kind="manual",
+            confidence=4,
+        )
         assert memory.content == "手动记忆：偏好 FastAPI"
         assert memory.status == MemoryStatus.active
+        assert memory.scope == "project"
+        assert memory.category == "preference"
+        assert memory.source_kind == "manual"
+        assert memory.confidence == 4
 
         updated = await service.update_memory(memory.id, content="手动记忆：偏好 SQLAlchemy", importance=4)
         assert updated.content == "手动记忆：偏好 SQLAlchemy"
@@ -193,6 +205,8 @@ async def test_memory_service_retrieve_matches_scores_and_explains_results():
         assert matches[0].score > 0
         assert "FastAPI" in matches[0].matched_terms
         assert "命中" in matches[0].reason
+        assert matches[0].scope == "project"
+        assert matches[0].category == "preference"
         assert fastapi.use_count == 1
         assert fastapi.last_used_at is not None
 

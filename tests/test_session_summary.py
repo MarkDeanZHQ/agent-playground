@@ -81,10 +81,13 @@ async def test_summary_updates_old_messages_and_keeps_current_turn_out(monkeypat
         assert "Agent 上下文压缩" in result.summary
         assert "第三轮：最近消息应该保留" not in result.summary
         assert len(result.summary) <= 300
+        assert "done" in result.summary_json
+        assert result.summary_blocks
         stored = (
             await db_session.execute(select(SessionSummary).where(SessionSummary.session_id == session.id))
         ).scalar_one()
         assert stored.covered_message_count == 3
+        assert stored.summary_json
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,7 @@
-from dataclasses import dataclass
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +19,8 @@ class SummaryResult:
     covered_message_count: int
     summary_chars: int
     newly_summarized_messages: int
+    summary_json: dict[str, list[str] | str]
+    summary_blocks: list[dict[str, object]] = field(default_factory=list)
 
     def trace_payload(self, session_id: str) -> dict[str, object]:
         return {
@@ -26,6 +31,8 @@ class SummaryResult:
             "covered_message_count": self.covered_message_count,
             "summary_chars": self.summary_chars,
             "newly_summarized_messages": self.newly_summarized_messages,
+            "summary_json": self.summary_json,
+            "summary_blocks": self.summary_blocks,
         }
 
 
@@ -59,12 +66,19 @@ class SessionSummaryService:
         if not messages:
             return self._result(summary, checked=True, updated=False, newly_summarized_messages=0)
 
-        content = self._summarize(summary.content if summary is not None else "", messages)
+        summary_json = self._summarize_json(summary.summary_json if summary is not None else "{}", messages)
+        content = self._format_summary(summary_json)
         if summary is None:
-            summary = SessionSummary(session_id=session_id, content=content, covered_message_count=cutoff_count)
+            summary = SessionSummary(
+                session_id=session_id,
+                content=content,
+                summary_json=json.dumps(summary_json, ensure_ascii=False),
+                covered_message_count=cutoff_count,
+            )
             self.db.add(summary)
         else:
             summary.content = content
+            summary.summary_json = json.dumps(summary_json, ensure_ascii=False)
             summary.covered_message_count = cutoff_count
             summary.updated_at = utc_now()
         await self.db.flush()
@@ -95,21 +109,62 @@ class SessionSummaryService:
         )
         return list(result.scalars())
 
-    def _summarize(self, previous_summary: str, messages: list[Message]) -> str:
-        lines: list[str] = []
-        if previous_summary.strip():
-            lines.append("历史摘要：")
-            lines.extend(previous_summary.strip().splitlines())
-        lines.append("新增历史消息：")
+    def _summarize_json(self, previous_summary: str, messages: list[Message]) -> dict[str, list[str] | str]:
+        parsed = self._parse_summary_json(previous_summary)
+        for block in (
+            "active_goal",
+            "confirmed_constraints",
+            "user_preferences_seen_this_session",
+            "done",
+            "pending",
+            "open_questions",
+            "important_artifacts",
+        ):
+            parsed.setdefault(block, [])
         for message in messages:
             role = message.role.value if hasattr(message.role, "value") else str(message.role)
-            content = self._important_text(message.content)
-            lines.append(f"- {role}: {content}")
-        text = "\n".join(line for line in lines if line.strip())
-        max_chars = self.settings.summary_max_chars
-        if len(text) <= max_chars:
-            return text
-        return text[-max_chars:].lstrip()
+            text = self._important_text(message.content)
+            if any(term in text for term in ("必须", "不要", "约束")):
+                bucket = "confirmed_constraints"
+            elif role == "assistant":
+                bucket = "done"
+            else:
+                bucket = "pending"
+            parsed.setdefault(bucket, [])
+            items = parsed[bucket]
+            if isinstance(items, list):
+                items.append(f"{role}: {text}")
+        return parsed
+
+    def _parse_summary_json(self, previous_summary: str) -> dict[str, list[str] | str]:
+        if not previous_summary.strip():
+            return {}
+        try:
+            data = json.loads(previous_summary)
+        except json.JSONDecodeError:
+            return {"done": [line for line in previous_summary.splitlines() if line.strip()]}
+        return data if isinstance(data, dict) else {}
+
+    def _format_summary(self, summary_json: dict[str, list[str] | str]) -> str:
+        lines: list[str] = []
+        for key in (
+            "active_goal",
+            "confirmed_constraints",
+            "user_preferences_seen_this_session",
+            "done",
+            "pending",
+            "open_questions",
+            "important_artifacts",
+        ):
+            value = summary_json.get(key)
+            if not value:
+                continue
+            lines.append(f"{key}:")
+            if isinstance(value, list):
+                lines.extend(f"- {item}" for item in value)
+            else:
+                lines.append(f"- {value}")
+        return "\n".join(lines)[: self.settings.summary_max_chars]
 
     def _important_text(self, content: str) -> str:
         normalized = " ".join(content.split())
@@ -120,19 +175,38 @@ class SessionSummaryService:
     def _result(
         self,
         summary: SessionSummary | None,
+        *,
         checked: bool,
         updated: bool,
         newly_summarized_messages: int,
         force_unused: bool = False,
     ) -> SummaryResult:
-        content = summary.content if summary is not None and summary.content else None
-        used = bool(content) and not force_unused
+        if summary is None:
+            return SummaryResult(
+                summary=None,
+                checked=checked,
+                updated=updated,
+                used=False and not force_unused,
+                covered_message_count=0,
+                summary_chars=0,
+                newly_summarized_messages=newly_summarized_messages,
+                summary_json={},
+                summary_blocks=[],
+            )
+        parsed = self._parse_summary_json(summary.summary_json)
+        blocks = [
+            {"name": key, "items": value, "count": len(value) if isinstance(value, list) else 1}
+            for key, value in parsed.items()
+        ]
+        content = None if force_unused else summary.content or None
         return SummaryResult(
-            summary=content if used else None,
+            summary=content,
             checked=checked,
             updated=updated,
-            used=used,
-            covered_message_count=summary.covered_message_count if summary is not None else 0,
+            used=bool(content),
+            covered_message_count=summary.covered_message_count,
             summary_chars=len(content or ""),
             newly_summarized_messages=newly_summarized_messages,
+            summary_json=parsed,
+            summary_blocks=blocks,
         )

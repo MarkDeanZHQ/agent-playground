@@ -88,6 +88,10 @@ class ChatService:
                                     "score": memory.score,
                                     "matched_terms": memory.matched_terms,
                                     "reason": memory.reason,
+                                    "scope": memory.scope,
+                                    "category": memory.category,
+                                    "source_kind": memory.source_kind,
+                                    "confidence": memory.confidence,
                                 }
                                 for memory in memories
                             ],
@@ -168,7 +172,7 @@ class ChatService:
         await self._trace_memory_step(
             run.id,
             "memory_policy_decision",
-            {"should_store": should_store, "reason": reason},
+            {"should_store": should_store, "reason": reason, "candidate": self.memory.candidate_content(text)},
         )
         candidate = self.memory.candidate_content(text)
         superseded = []
@@ -186,7 +190,15 @@ class ChatService:
                 await self._trace_memory_step(
                     run.id,
                     "memory_saved",
-                    {"memory_id": memory.id, "content": memory.content, "conflict_key": memory.conflict_key},
+                    {
+                        "memory_id": memory.id,
+                        "content": memory.content,
+                        "conflict_key": memory.conflict_key,
+                        "scope": memory.scope,
+                        "category": memory.category,
+                        "source_kind": memory.source_kind,
+                        "confidence": memory.confidence,
+                    },
                 )
         else:
             await self._trace_memory_step(run.id, "memory_skipped", {"reason": reason})

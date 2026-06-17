@@ -140,7 +140,11 @@ class MemoryLabScreen(Screen[None]):
         for memory in self.memories:
             usage = f"used={memory.get('use_count', 0)}"
             conflict = memory.get("conflict_key") or "no-key"
-            label = f"{memory['id']} {memory['status']} {usage} {conflict} {short_text(memory['content'], 40)}"
+            source = f"{memory.get('scope', 'project')}/{memory.get('category', 'preference')}"
+            label = (
+                f"{memory['id']} {memory['status']} {source} {usage} {conflict} "
+                f"{short_text(memory['content'], 32)}"
+            )
             await memory_list.append(ListItem(Label(label)))
         if self.memories:
             memory_list.index = 0
@@ -223,7 +227,8 @@ class MemoryLabScreen(Screen[None]):
     def _show_memory(self, memory: dict[str, Any]) -> None:
         detail = self.query_one("#memory-detail", CopyableText)
         detail.clear()
-        detail.write("排序：命中质量优先，其次 importance、使用次数、更新时间")
+        detail.write("排序：命中质量优先，其次 importance、使用次数、更新时间。")
+        detail.write("结构：scope/category/source_kind/confidence。")
         detail.write(pretty_json(memory))
         self.query_one("#memory-editor", TextArea).load_text(memory["content"])
         self._set_status("已显示选中记忆详情。")

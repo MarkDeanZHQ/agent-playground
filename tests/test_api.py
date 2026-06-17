@@ -136,6 +136,7 @@ async def test_memories_endpoint_supports_query_status_and_source_fields():
     memories = memory_response.json()
     assert any("FastAPI" in memory["content"] for memory in memories)
     assert {"source_message_id", "created_at", "updated_at"}.issubset(memories[0])
+    assert {"scope", "category", "source_kind", "confidence", "sensitivity"}.issubset(memories[0])
 
 
 @pytest.mark.asyncio
@@ -158,6 +159,8 @@ async def test_memory_management_endpoints_complete_lifecycle():
 
     assert create_response.status_code == 200
     assert create_response.json()["content"] == "手动 API 记忆"
+    assert create_response.json()["scope"] == "project"
+    assert create_response.json()["category"] == "preference"
     assert update_response.status_code == 200
     assert update_response.json()["content"] == "更新后的 API 记忆"
     assert archive_response.status_code == 200
@@ -303,13 +306,17 @@ async def test_long_session_context_includes_summary_without_current_message(mon
     kinds = {step["kind"] for step in steps}
     assert {"session_summary_checked", "session_summary_updated", "session_summary_used"}.issubset(kinds)
     contexts = [json.loads(step["content"])["context"] for step in steps if step["kind"] == "context_built"]
+    context_traces = [json.loads(step["content"])["context_trace"] for step in steps if step["kind"] == "context_built"]
     assert contexts
     context = contexts[0]
     assert "session_summary:" in context
     assert "recent_messages:" in context
+    assert context_traces[0]["blocks"]
     summary_step = next(step for step in steps if step["kind"] == "session_summary_used")
     summary = json.loads(summary_step["content"])["summary"]
+    summary_json = json.loads(summary_step["content"])["summary_json"]
     assert "第一轮：记住我的偏好是 FastAPI" in summary
+    assert "done" in summary_json
     assert current_message not in summary
 
 
@@ -331,11 +338,12 @@ async def test_memory_roundtrip_retrieves_injects_and_uses_saved_memory():
     assert payload["used_memories"]
     assert "FastAPI" in payload["answer"]
     contexts = [
-        json.loads(step["content"])["context"]
+        json.loads(step["content"])
         for step in trace_response.json()["steps"]
         if step["kind"] == "context_built"
     ]
-    assert any(memory_message in context for context in contexts)
+    assert any(memory_message in context["context"] for context in contexts)
+    assert any(any(block["name"] == "memories" for block in context["context_trace"]["blocks"]) for context in contexts)
 
 
 @pytest.mark.asyncio

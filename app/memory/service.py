@@ -15,6 +15,10 @@ class RetrievedMemory:
     score: int
     matched_terms: list[str]
     reason: str
+    scope: str
+    category: str
+    source_kind: str
+    confidence: int
 
 
 TECHNICAL_TERMS = {
@@ -191,12 +195,28 @@ class MemoryService:
         content: str,
         importance: int = 2,
         memory_type: str = "preference",
+        scope: str = "project",
+        category: str = "preference",
+        source_kind: str = "manual",
+        confidence: int = 3,
+        session_id: str | None = None,
+        owner_id: str | None = None,
+        sensitivity: str = "public",
+        expires_at=None,
     ) -> Memory:
         validated_content = self._validate_content(content)
         memory = Memory(
             content=validated_content,
             importance=self._validate_importance(importance),
             memory_type=self._validate_memory_type(memory_type),
+            scope=self._validate_scope(scope),
+            category=self._validate_category(category),
+            source_kind=self._validate_source_kind(source_kind),
+            confidence=self._validate_confidence(confidence),
+            session_id=session_id,
+            owner_id=owner_id,
+            sensitivity=self._validate_sensitivity(sensitivity),
+            expires_at=expires_at,
             status=MemoryStatus.active,
             conflict_key=conflict_key_for_content(validated_content),
         )
@@ -212,8 +232,28 @@ class MemoryService:
         content: str | None = None,
         importance: int | None = None,
         memory_type: str | None = None,
+        scope: str | None = None,
+        category: str | None = None,
+        source_kind: str | None = None,
+        confidence: int | None = None,
+        session_id: str | None = None,
+        owner_id: str | None = None,
+        sensitivity: str | None = None,
+        expires_at=None,
     ) -> Memory:
-        if content is None and importance is None and memory_type is None:
+        if (
+            content is None
+            and importance is None
+            and memory_type is None
+            and scope is None
+            and category is None
+            and source_kind is None
+            and confidence is None
+            and session_id is None
+            and owner_id is None
+            and sensitivity is None
+            and expires_at is None
+        ):
             raise InvalidMemoryPayloadError("At least one memory field must be provided")
 
         memory = await self._get_memory(memory_id)
@@ -228,6 +268,22 @@ class MemoryService:
             memory.importance = self._validate_importance(importance)
         if memory_type is not None:
             memory.memory_type = self._validate_memory_type(memory_type)
+        if scope is not None:
+            memory.scope = self._validate_scope(scope)
+        if category is not None:
+            memory.category = self._validate_category(category)
+        if source_kind is not None:
+            memory.source_kind = self._validate_source_kind(source_kind)
+        if confidence is not None:
+            memory.confidence = self._validate_confidence(confidence)
+        if session_id is not None:
+            memory.session_id = session_id
+        if owner_id is not None:
+            memory.owner_id = owner_id
+        if sensitivity is not None:
+            memory.sensitivity = self._validate_sensitivity(sensitivity)
+        if expires_at is not None:
+            memory.expires_at = expires_at
         memory.updated_at = utc_now()
         self._record_version(memory, "updated")
         await self.db.flush()
@@ -295,6 +351,10 @@ class MemoryService:
             content=content,
             importance=2,
             source_message_id=message_id,
+            scope="session",
+            category="preference",
+            source_kind="user_message",
+            confidence=3,
             conflict_key=conflict_key,
         )
         self.db.add(memory)
@@ -371,6 +431,10 @@ class MemoryService:
             score=score,
             matched_terms=matched_terms,
             reason=reason,
+            scope=memory.scope,
+            category=memory.category,
+            source_kind=memory.source_kind,
+            confidence=memory.confidence,
         )
 
     def _score_memory(self, memory: Memory, terms: list[str]) -> int:
@@ -423,6 +487,36 @@ class MemoryService:
         normalized = memory_type.strip()
         if not normalized:
             raise InvalidMemoryPayloadError("Memory type must not be empty")
+        return normalized
+
+    def _validate_scope(self, scope: str) -> str:
+        normalized = scope.strip()
+        if normalized not in {"working", "session", "user", "project"}:
+            raise InvalidMemoryPayloadError("Memory scope must be working/session/user/project")
+        return normalized
+
+    def _validate_category(self, category: str) -> str:
+        normalized = category.strip()
+        if not normalized:
+            raise InvalidMemoryPayloadError("Memory category must not be empty")
+        return normalized
+
+    def _validate_source_kind(self, source_kind: str) -> str:
+        normalized = source_kind.strip()
+        if normalized not in {"user_message", "assistant_inference", "tool_result", "manual"}:
+            message = "Memory source_kind must be user_message/assistant_inference/tool_result/manual"
+            raise InvalidMemoryPayloadError(message)
+        return normalized
+
+    def _validate_confidence(self, confidence: int) -> int:
+        if not 1 <= confidence <= 5:
+            raise InvalidMemoryPayloadError("Memory confidence must be between 1 and 5")
+        return confidence
+
+    def _validate_sensitivity(self, sensitivity: str) -> str:
+        normalized = sensitivity.strip()
+        if normalized not in {"public", "private", "secret"}:
+            raise InvalidMemoryPayloadError("Memory sensitivity must be public/private/secret")
         return normalized
 
     def _record_version(self, memory: Memory, operation: str) -> None:

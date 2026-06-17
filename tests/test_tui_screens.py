@@ -5,10 +5,10 @@ from app.tui.main import AgentPlaygroundTui
 from app.tui.screens.memory_lab import MemoryLabScreen
 from app.tui.screens.tools_lab import (
     format_history_entry,
-    format_tool_result,
-    make_example_prompt,
     format_schema_validation_error,
     format_tool_json_error,
+    format_tool_result,
+    make_example_prompt,
     sample_arguments_for_schema,
     sample_arguments_for_tool,
     validate_arguments_against_schema,

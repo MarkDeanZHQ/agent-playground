@@ -84,6 +84,13 @@ class CreateMemoryRequest(BaseModel):
     content: str = Field(min_length=1)
     importance: int = Field(default=2, ge=1, le=5)
     memory_type: str = "preference"
+    scope: str = "project"
+    category: str = "preference"
+    source_kind: str = "manual"
+    confidence: int = Field(default=3, ge=1, le=5)
+    session_id: str | None = None
+    owner_id: str | None = None
+    sensitivity: str = "public"
 
     @field_validator("content")
     @classmethod
@@ -98,6 +105,13 @@ class UpdateMemoryRequest(BaseModel):
     content: str | None = Field(default=None, min_length=1)
     importance: int | None = Field(default=None, ge=1, le=5)
     memory_type: str | None = None
+    scope: str | None = None
+    category: str | None = None
+    source_kind: str | None = None
+    confidence: int | None = Field(default=None, ge=1, le=5)
+    session_id: str | None = None
+    owner_id: str | None = None
+    sensitivity: str | None = None
 
     @field_validator("content")
     @classmethod
@@ -111,7 +125,18 @@ class UpdateMemoryRequest(BaseModel):
 
     @model_validator(mode="after")
     def at_least_one_field(self) -> "UpdateMemoryRequest":
-        if self.content is None and self.importance is None and self.memory_type is None:
+        if (
+            self.content is None
+            and self.importance is None
+            and self.memory_type is None
+            and self.scope is None
+            and self.category is None
+            and self.source_kind is None
+            and self.confidence is None
+            and self.session_id is None
+            and self.owner_id is None
+            and self.sensitivity is None
+        ):
             raise ValueError("at least one field must be provided")
         return self
 
@@ -128,6 +153,14 @@ class MemoryResponse(BaseModel):
     id: str
     content: str
     memory_type: str
+    scope: str
+    category: str
+    source_kind: str
+    confidence: int
+    session_id: str | None = None
+    owner_id: str | None = None
+    sensitivity: str
+    supersedes_memory_id: str | None = None
     importance: int
     status: str
     source_message_id: str | None = None

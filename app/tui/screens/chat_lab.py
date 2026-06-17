@@ -144,6 +144,9 @@ class ChatLabScreen(Screen[None]):
             covered = event.data.get("covered_message_count")
             chars = event.data.get("summary_chars")
             conversation.write(f"Session summary used: covered={covered} summary_chars={chars}")
+        if event.event == "context_built":
+            trace = event.data.get("context_trace", {})
+            conversation.write(f"Context blocks: {pretty_json(trace)}")
         if event.event == "tool_result":
             conversation.write(f"Tool result: {event.data.get('name')} error={event.data.get('is_error')}")
         if event.event == "latency_metric":

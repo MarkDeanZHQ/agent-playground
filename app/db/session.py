@@ -1,11 +1,11 @@
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
-from alembic.config import Config
-from alembic.script import ScriptDirectory
 
 from app.core.config import get_settings
 
@@ -44,13 +44,21 @@ def _revision_error_message(current_revision: str | None, head_revision: str) ->
 async def _ensure_alembic_revision() -> None:
     head_revision = _alembic_head_revision()
     async with engine.connect() as conn:
-        has_version_table = await conn.run_sync(lambda sync_conn: sync_conn.dialect.has_table(sync_conn, "alembic_version"))
+        has_version_table = await conn.run_sync(
+            lambda sync_conn: sync_conn.dialect.has_table(sync_conn, "alembic_version")
+        )
         if not has_version_table:
             raise RuntimeError(_revision_error_message(None, head_revision))
         revision_result = await conn.execute(text("SELECT version_num FROM alembic_version"))
         current_revision = revision_result.scalar_one_or_none()
         if current_revision != head_revision:
             raise RuntimeError(_revision_error_message(current_revision, head_revision))
+
+
+async def _sqlite_add_column_if_missing(conn, table: str, columns: set[str], column: str, definition: str) -> None:
+    if column in columns:
+        return
+    await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
 
 
 async def init_db() -> None:
@@ -64,16 +72,40 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         if conn.dialect.name == "sqlite":
+            summary_result = await conn.execute(text("PRAGMA table_info(session_summaries)"))
+            summary_columns = {row[1] for row in summary_result}
+            await _sqlite_add_column_if_missing(
+                conn,
+                "session_summaries",
+                summary_columns,
+                "summary_json",
+                "TEXT NOT NULL DEFAULT '{}'",
+            )
+
             result = await conn.execute(text("PRAGMA table_info(memories)"))
             columns = {row[1] for row in result}
-            if "use_count" not in columns:
-                await conn.execute(text("ALTER TABLE memories ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0"))
-            if "last_used_at" not in columns:
-                await conn.execute(text("ALTER TABLE memories ADD COLUMN last_used_at DATETIME"))
-            if "conflict_key" not in columns:
-                await conn.execute(text("ALTER TABLE memories ADD COLUMN conflict_key VARCHAR(120)"))
+            memory_columns = {
+                "scope": "VARCHAR(20) NOT NULL DEFAULT 'project'",
+                "category": "VARCHAR(50) NOT NULL DEFAULT 'preference'",
+                "source_kind": "VARCHAR(50) NOT NULL DEFAULT 'manual'",
+                "confidence": "INTEGER NOT NULL DEFAULT 3",
+                "session_id": "VARCHAR",
+                "owner_id": "VARCHAR(120)",
+                "sensitivity": "VARCHAR(20) NOT NULL DEFAULT 'public'",
+                "supersedes_memory_id": "VARCHAR",
+                "expires_at": "DATETIME",
+                "use_count": "INTEGER NOT NULL DEFAULT 0",
+                "last_used_at": "DATETIME",
+                "conflict_key": "VARCHAR(120)",
+            }
+            for column, definition in memory_columns.items():
+                await _sqlite_add_column_if_missing(conn, "memories", columns, column, definition)
             await conn.execute(
                 text("CREATE INDEX IF NOT EXISTS ix_memories_conflict_key ON memories (conflict_key)")
+            )
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_memories_session_id ON memories (session_id)"))
+            await conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_memories_supersedes_memory_id ON memories (supersedes_memory_id)")
             )
 
 

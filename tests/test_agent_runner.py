@@ -108,6 +108,49 @@ async def test_agent_loop_supports_two_round_tool_calls():
 
 
 @pytest.mark.asyncio
+async def test_stream_supports_two_round_tool_calls_without_duplicate_records():
+    from app.schemas.api import ModelTurn, ToolCallRequest
+
+    class TwoRoundStreamingModel:
+        def __init__(self):
+            self.turn_count = 0
+
+        async def stream_turn(self, user_message, context, tool_results):
+            self.turn_count += 1
+            if self.turn_count == 1:
+                yield ModelTurn(
+                    kind="tool_call",
+                    tool_calls=[ToolCallRequest(name="text_stats", arguments={"text": "hello world"})],
+                    finish_reason="test_tool_call_1",
+                )
+                return
+            if self.turn_count == 2:
+                yield ModelTurn(
+                    kind="tool_call",
+                    tool_calls=[ToolCallRequest(name="note_search", arguments={"query": "demo"})],
+                    finish_reason="test_tool_call_2",
+                )
+                return
+            yield "two tools done"
+            yield ModelTurn(kind="final", content="two tools done", finish_reason="stop")
+
+    async with AsyncSessionLocal() as db:
+        runner = AgentRunner(db, build_default_registry(), model=TwoRoundStreamingModel())
+
+        events = [event async for event in runner.stream("ses_test", "请连续使用两个工具", [])]
+        run_id = events[0].data["run_id"]
+        tool_call_result = await db.execute(select(ToolCall).where(ToolCall.run_id == run_id))
+        step_result = await db.execute(select(AgentStep.kind).where(AgentStep.run_id == run_id))
+
+        step_kinds = list(step_result.scalars())
+        assert events[-1].event == "run_finished"
+        assert events[-1].data["text"] == "two tools done"
+        assert len(list(tool_call_result.scalars())) == 2
+        assert step_kinds.count("tool_call") == 2
+        assert step_kinds.count("tool_result") == 2
+
+
+@pytest.mark.asyncio
 async def test_agent_loop_records_token_usage_step_for_model_usage():
     from app.schemas.api import ModelTurn
 
