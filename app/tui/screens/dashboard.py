@@ -21,6 +21,40 @@ from app.tui.widgets import (
 )
 
 
+def format_dashboard_latest_run(latest_run: dict[str, object] | None) -> list[str]:
+    if not isinstance(latest_run, dict):
+        return ["Latest Run: n/a"]
+    lines = [
+        f"Run ID: {latest_run.get('id')}",
+        f"Status: {latest_run.get('status')}",
+        f"Created: {latest_run.get('created_at')}",
+    ]
+    if latest_run.get("finished_at"):
+        lines.append(f"Finished: {latest_run.get('finished_at')}")
+    if latest_run.get("duration_ms") is not None:
+        lines.append(f"Duration: {latest_run.get('duration_ms')}ms")
+    return lines
+
+
+def format_dashboard_model_error(detail: dict[str, object] | None) -> list[str]:
+    if not isinstance(detail, dict):
+        return []
+    label = "Latest Run Failed With Model Error" if detail.get("is_latest_run") else "Latest Historical Model Error"
+    type_code = "/".join(
+        str(value)
+        for value in [detail.get("error_type"), detail.get("error_code")]
+        if value
+    )
+    header_parts = [str(detail.get("created_at") or "time=n/a"), str(detail.get("run_id") or "run=n/a")]
+    if type_code:
+        header_parts.append(type_code)
+    lines = [f"{label}:", " ".join(header_parts)]
+    if not detail.get("is_latest_run"):
+        lines.append("历史错误，不代表当前模型健康状态。")
+    lines.append(str(detail.get("message") or ""))
+    return lines
+
+
 class DashboardScreen(Screen[None]):
     BINDINGS = [("r", "refresh", "刷新"), ("l", "live_model_check", "真实模型检查")]
 
@@ -66,6 +100,7 @@ class DashboardScreen(Screen[None]):
         model_status = "unknown"
         model_message = ""
         model_check_mode = "static"
+        model_health: dict[str, object] = {}
         live_duration_seconds: float | None = None
         run_stats: dict[str, object] = {}
         try:
@@ -94,8 +129,11 @@ class DashboardScreen(Screen[None]):
             tool_count = 0
             status.update("API 请求失败，详情见下方日志。")
 
+        log.write("Current API")
         log.write(f"API URL: {self.client.base_url}")
         log.write(f"API Status: {api_status}")
+        log.write("")
+        log.write("Current Model")
         log.write(f"Provider: {settings.model_provider}")
         if settings.model_provider == "claude":
             credential_status = "configured" if settings.anthropic_api_key else "SDK env/profile"
@@ -124,6 +162,12 @@ class DashboardScreen(Screen[None]):
             )
         if model_health.get("tool_calling_message"):
             log.write(f"Tool Calling Detail:\n{model_health.get('tool_calling_message')}")
+        log.write("")
+        log.write("Latest Run")
+        for line in format_dashboard_latest_run(run_stats.get("latest_run") if run_stats else None):
+            log.write(line)
+        log.write("")
+        log.write("Recent History")
         log.write(f"Runs: {run_count}")
         if run_stats:
             log.write(f"Recent Run Sample Size: {run_stats.get('sample_size')}")
@@ -135,7 +179,7 @@ class DashboardScreen(Screen[None]):
                 log.write(f"Latest Provider Error: {format_error_info(run_stats.get('latest_error_info'))}")
             if run_stats.get("latest_cost_notice"):
                 log.write(f"Cost Notice: {run_stats.get('latest_cost_notice')}")
-            if run_stats.get("latest_model_error"):
-                log.write(f"Latest Model Error:\n{run_stats.get('latest_model_error')}")
+            for line in format_dashboard_model_error(run_stats.get("latest_model_error_detail")):
+                log.write(line)
         log.write(f"Memories: {memory_count}")
         log.write(f"Tools: {tool_count}")

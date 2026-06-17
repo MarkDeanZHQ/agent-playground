@@ -10,11 +10,12 @@ from sqlalchemy import select
 os.environ["AGENT_PLAYGROUND_DATABASE_URL"] = "sqlite+aiosqlite:///./test_agent_playground.db"
 
 from app.agent.runner import AgentRunner  # noqa: E402
-from app.db.models import Message, MessageRole  # noqa: E402
+from app.db.models import Message, MessageRole, RunStatus  # noqa: E402
 from app.db.session import AsyncSessionLocal  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models.adapters import ModelAdapterError  # noqa: E402
 from app.services.model_observability import (  # noqa: E402
+    classify_model_error,
     classify_provider_error,
     estimate_cost,
     usage_summary_from_payload,
@@ -378,6 +379,15 @@ def test_provider_error_classification_covers_auth_rate_limit_timeout_and_tool_s
     assert tool_schema.code == "tool_schema_incompatible"
 
 
+def test_model_error_classification_covers_authentication_error():
+    classification = classify_model_error(
+        "OpenAI 兼容流式请求失败：AuthenticationError: Error code: 401 - auth_unavailable",
+    )
+
+    assert classification["error_type"] == "authentication_error"
+    assert classification["error_code"] == "auth_unavailable"
+
+
 @pytest.mark.asyncio
 async def test_chat_context_includes_recent_messages_from_same_session_only():
     first_message = "第一轮：我正在学习短期上下文"
@@ -607,7 +617,11 @@ async def test_dashboard_run_stats_endpoint_returns_recent_failure_and_model_err
             raise ModelAdapterError("forced dashboard failure")
 
     async with AsyncSessionLocal() as db:
-        await AgentRunner(db, build_default_registry(), model=FailingModel()).run("ses_failed_stats", "你好", [])
+        failed_run = await AgentRunner(db, build_default_registry(), model=FailingModel()).run(
+            f"ses_failed_stats_{uuid4().hex}",
+            "你好",
+            [],
+        )
         await db.commit()
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -620,6 +634,38 @@ async def test_dashboard_run_stats_endpoint_returns_recent_failure_and_model_err
     assert payload["failed_runs"] >= 1
     assert payload["average_duration_ms"] is not None
     assert payload["latest_model_error"]
+    assert payload["latest_run"]["status"] == "completed"
+    assert payload["latest_model_error_detail"]["run_id"] == failed_run.id
+    assert payload["latest_model_error_detail"]["is_latest_run"] is False
+
+
+@pytest.mark.asyncio
+async def test_dashboard_run_stats_endpoint_marks_latest_run_model_error():
+    class FailingModel:
+        async def next_turn(self, user_message, context, tool_results):
+            raise ModelAdapterError(
+                "OpenAI 兼容流式请求失败：AuthenticationError: Error code: 401 - auth_unavailable",
+            )
+
+    async with AsyncSessionLocal() as db:
+        failed_run = await AgentRunner(db, build_default_registry(), model=FailingModel()).run(
+            f"ses_latest_failed_{uuid4().hex}",
+            "你好",
+            [],
+        )
+        await db.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/v1/dashboard/run-stats", params={"sample_size": 1})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["latest_run"]["id"] == failed_run.id
+    assert payload["latest_run"]["status"] == RunStatus.failed.value
+    assert payload["latest_model_error_detail"]["run_id"] == failed_run.id
+    assert payload["latest_model_error_detail"]["is_latest_run"] is True
+    assert payload["latest_model_error_detail"]["error_type"] == "authentication_error"
+    assert payload["latest_model_error_detail"]["error_code"] == "auth_unavailable"
 
 
 @pytest.mark.asyncio

@@ -61,7 +61,7 @@
 - 工具集仅包含安全的教学工具，不提供 shell、浏览器抓取、任意文件读写等高权限工具。
 - OpenAI-compatible 服务的 tool calling 支持度不一致；协议兼容模式只调整参数与流式解析，不再自动禁用 tools。
 - `live=true` 模型健康检查会真实请求模型供应商，可能产生 token 成本或触发供应商限流。
-- Dashboard、Chat Lab、Run Trace 会展示最近一次统一 `usage_summary`、`estimated_cost` 和 `provider error` 分类。
+- Dashboard、Chat Lab、Run Trace 会展示最近一次统一 `usage_summary`、`estimated_cost` 和 `provider error` 分类。Dashboard 另外把当前模型健康检查与历史 Run 错误分开展示：`Current Model` 只对应 `/api/v1/models/health`，`Latest Run` 只对应最近一次 Run，`Recent History` 才展示历史失败与 `latest_model_error_detail`。
 - Docker 默认使用 `fake` provider；接入真实 Claude/OpenAI 时需要自行配置 API Key，并避免提交 `.env` / `.env.docker`。
 
 ## 使用 uv 创建依赖环境
@@ -287,7 +287,10 @@ Dashboard 新增最近 run 的轻量指标：
 
 - 最近样本失败次数；
 - 最近样本平均耗时；
-- 最近一次 `model_error` 摘要。
+- 最新 Run 状态、创建时间、完成时间与耗时；
+- 最近一次历史 `model_error` 结构化摘要，包含 `run_id`、时间、错误类型、错误码，以及该错误是否属于最新 Run。
+
+注意：Dashboard 的 `Model Health` 只表示当前 `/api/v1/models/health` 检查结果；`Latest Historical Model Error` 是历史 Run 记录，不代表当前模型仍然不可用。只有当 `latest_model_error_detail.is_latest_run=true` 时，它才说明最近一次 Run 就是被模型错误打断。
 
 本轮已提供初始迁移：
 

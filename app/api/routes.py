@@ -23,7 +23,9 @@ from app.schemas.api import (
     CostEstimate,
     CreateMemoryRequest,
     CreateSessionRequest,
+    DashboardModelErrorSummary,
     DashboardRunStatsResponse,
+    DashboardRunSummary,
     MemoryResponse,
     MemoryVersionResponse,
     ModelHealthResponse,
@@ -40,6 +42,7 @@ from app.schemas.api import (
     UsageSummary,
 )
 from app.services.chat import ChatService
+from app.services.model_observability import classify_model_error
 from app.tools.builtin import build_default_registry
 
 router = APIRouter(prefix="/api/v1")
@@ -395,21 +398,44 @@ async def dashboard_run_stats(
         for run in runs
         if run.finished_at is not None
     ]
+    latest_run = runs[0] if runs else None
+    latest_run_summary = (
+        DashboardRunSummary(
+            id=latest_run.id,
+            status=getattr(latest_run.status, "value", latest_run.status),
+            created_at=latest_run.created_at,
+            finished_at=latest_run.finished_at,
+            duration_ms=int((latest_run.finished_at - latest_run.created_at).total_seconds() * 1000)
+            if latest_run.finished_at is not None
+            else None,
+        )
+        if latest_run is not None
+        else None
+    )
     latest_error_run_result = await db.execute(
         select(AgentRun)
         .join(AgentStep, AgentStep.run_id == AgentRun.id)
         .where(AgentStep.kind == "model_error")
-        .order_by(AgentStep.created_at.desc())
+        .order_by(AgentRun.created_at.desc(), AgentStep.created_at.desc())
         .limit(1)
         .options(selectinload(AgentRun.steps))
     )
     latest_error_run = latest_error_run_result.scalar_one_or_none()
     latest_model_error: str | None = None
+    latest_model_error_detail: DashboardModelErrorSummary | None = None
     latest_usage_summary: UsageSummary | None = None
     latest_estimated_cost: CostEstimate | None = None
     latest_error_info: ProviderErrorInfo | None = None
     latest_cost_notice: str | None = None
     if latest_error_run is not None:
+        latest_error_step = next(
+            (
+                step
+                for step in sorted(latest_error_run.steps, key=lambda item: item.step_index, reverse=True)
+                if step.kind == "model_error"
+            ),
+            None,
+        )
         (
             latest_usage_summary,
             latest_estimated_cost,
@@ -418,19 +444,33 @@ async def dashboard_run_stats(
         ) = _usage_cost_error_from_steps(list(latest_error_run.steps))
         if latest_error_info is not None:
             latest_model_error = latest_error_info.message
+        elif latest_error_step is not None:
+            payload = _parse_step_json(latest_error_step.content)
+            if payload and payload.get("message"):
+                latest_model_error = str(payload["message"])
         else:
-            for step in sorted(latest_error_run.steps, key=lambda item: item.step_index, reverse=True):
-                if step.kind != "model_error":
-                    continue
-                payload = _parse_step_json(step.content)
-                if payload and payload.get("message"):
-                    latest_model_error = str(payload["message"])
-                    break
+            latest_model_error = None
+
+        if latest_model_error:
+            classification = classify_model_error(latest_model_error)
+            latest_model_error_detail = DashboardModelErrorSummary(
+                run_id=latest_error_run.id,
+                message=latest_model_error,
+                created_at=latest_error_step.created_at if latest_error_step is not None else None,
+                run_status=getattr(latest_error_run.status, "value", latest_error_run.status),
+                is_latest_run=bool(latest_run is not None and latest_error_run.id == latest_run.id),
+                provider=latest_error_info.provider if latest_error_info is not None else None,
+                phase=classification["phase"],
+                error_type=classification["error_type"],
+                error_code=classification["error_code"],
+            )
     return DashboardRunStatsResponse(
         sample_size=len(runs),
         failed_runs=failed_runs,
         average_duration_ms=int(sum(durations) / len(durations)) if durations else None,
         latest_model_error=latest_model_error,
+        latest_run=latest_run_summary,
+        latest_model_error_detail=latest_model_error_detail,
         latest_usage_summary=latest_usage_summary,
         latest_estimated_cost=latest_estimated_cost,
         latest_error_info=latest_error_info,

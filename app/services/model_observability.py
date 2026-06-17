@@ -176,6 +176,29 @@ def classify_provider_error(provider: str, exc: Exception) -> ProviderErrorInfo:
     )
 
 
+def classify_model_error(message: str) -> dict[str, str | None]:
+    lower_message = message.lower()
+    error_type: str | None = "provider_error"
+    error_code: str | None = None
+    phase = "model_request"
+
+    if any(token in lower_message for token in ("authenticationerror", "401", "auth_unavailable", "invalid_api_key")):
+        error_type = "authentication_error"
+        error_code = "auth_unavailable"
+        phase = "chat_stream"
+    elif any(token in lower_message for token in ("ratelimiterror", "429", "rate limit")):
+        error_type = "rate_limit"
+        error_code = "rate_limit"
+    elif any(token in lower_message for token in ("apitimeouterror", "timeout", "timed out", "readtimeout")):
+        error_type = "timeout"
+        error_code = "timeout"
+    elif any(token in lower_message for token in ("badrequesterror", "400", "bad request")):
+        error_type = "bad_request"
+        error_code = "bad_request"
+
+    return {"error_type": error_type, "error_code": error_code, "phase": phase}
+
+
 def usage_display_text(usage_summary: UsageSummary | None) -> str:
     if usage_summary is None:
         return "n/a"

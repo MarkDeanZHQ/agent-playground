@@ -213,11 +213,33 @@ class RunSummaryResponse(BaseModel):
     duration_ms: int | None = None
 
 
+class DashboardRunSummary(BaseModel):
+    id: str
+    status: str
+    created_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+
+
+class DashboardModelErrorSummary(BaseModel):
+    run_id: str | None = None
+    message: str
+    created_at: datetime | None = None
+    run_status: str | None = None
+    is_latest_run: bool = False
+    provider: str | None = None
+    phase: str | None = None
+    error_type: str | None = None
+    error_code: str | None = None
+
+
 class DashboardRunStatsResponse(BaseModel):
     sample_size: int
     failed_runs: int
     average_duration_ms: int | None = None
     latest_model_error: str | None = None
+    latest_run: DashboardRunSummary | None = None
+    latest_model_error_detail: DashboardModelErrorSummary | None = None
     latest_usage_summary: UsageSummary | None = None
     latest_estimated_cost: CostEstimate | None = None
     latest_error_info: ProviderErrorInfo | None = None
